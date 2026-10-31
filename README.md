@@ -2,15 +2,32 @@
 
 # pyLogDigitizer
 
-[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer)
+[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.ZENODO_CONCEPT_DOI.svg)](https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI)
+
+v0.1.0
 
 ![From a scanned paper log to a LAS curve](image/hero_scan_to_las.png)
 
 Turns scanned paper well logs (TIFF) into LAS files, with a local browser app to check and fix every step.
 
-Status: 0.1.0, early-stage research software. APIs may change; check every digitized curve before use.
+Status: early-stage research software. APIs may change; check every digitized curve before use.
 
-## What it does
+## Installation
+
+```bash
+git clone https://github.com/GeoLarryLai/pyLogDigitizer && cd pyLogDigitizer
+pip install ".[app,fast]"                   # builds the Rust tracer (needs a Rust toolchain)
+pip install ".[ml]"                         # optional: PyTorch U-Net cost map
+```
+
+Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release --extras app`.
+Without the Rust part everything still works, only slower.
+
+## Citation
+
+Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI](https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI)
+
+## Key Features
 
 - **Layout and calibration:** finds tracks and grids, deskews, reads depth labels (OCR) and calibrates scales,
   including backup-scale wraparound.
@@ -33,17 +50,6 @@ Notebooks: `notebooks/01_conventional_vs_assisted.ipynb` (one scan, step by step
 `notebooks/02_kansas_ml_train_batch.ipynb` (train the cost map and batch-digitize). Example scans and LAS files are
 from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOURCES.txt`).
 
-## Install
-
-```bash
-git clone https://github.com/GeoLarryLai/pyLogDigitizer && cd pyLogDigitizer
-pip install ".[app,fast]"                   # builds the Rust tracer (needs a Rust toolchain)
-pip install ".[ml]"                         # optional: PyTorch U-Net cost map
-```
-
-Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release --extras app`.
-Without the Rust part everything still works, only slower.
-
 ## Quick start
 
 ```bash
@@ -64,11 +70,6 @@ R["depth"], R["value"], R["conf"]           # then las_export.resample + write_l
 `backup=(150, 300)` is the **backup scale**: when a curve runs off the edge of its track it is redrawn from the other
 edge on a second scale, and the tracer unwraps it.
 
-## How to cite
-
-If you use pyLogDigitizer, please cite it with the metadata in [`CITATION.cff`](CITATION.cff)
-(GitHub's "Cite this repository" button).
-
-## Licence
+## License
 
 Copyright (C) 2026 Larry Syu-Heng Lai. AGPL-3.0-or-later (`LICENSE`, `NOTICE`).
