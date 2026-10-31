@@ -15,18 +15,16 @@ v0.1.0
 
 ```bash
 pip install pylogdigitizer
-pip install "pylogdigitizer[app,fast]"      # optional: browser app and faster tracing
-pip install "pylogdigitizer[ml]"            # optional: PyTorch U-Net cost map
 ```
 
 From source (builds the Rust tracer, needs a Rust toolchain):
 
 ```bash
 git clone https://github.com/GeoLarryLai/pyLogDigitizer && cd pyLogDigitizer
-pip install ".[app,fast]"
+pip install .
 ```
 
-Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release --extras app`.
+Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release`.
 Without the Rust part everything still works, only slower.
 
 ## Citation
@@ -64,7 +62,7 @@ from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOUR
 ```bash
 pylogdigitizer info example_data/USA_A_16_15-055-20536/4342.tif   # scan size and resolution
 pylogdigitizer-app .                        # guided app at http://127.0.0.1 (local only)
-pylogdigitizer editor . --open              # web editor (".[web]" extra)
+pylogdigitizer editor . --open              # web editor
 ```
 
 The same from Python:

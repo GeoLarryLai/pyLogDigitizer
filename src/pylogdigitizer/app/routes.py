@@ -47,7 +47,7 @@ def features(root: Path) -> dict:
         ocr=dict(ok=ocr, engine=eng["default"], engines={k: eng[k] for k in ocr_engines.ENGINES},
                  hint=None if ocr else "no OCR engine: " + ocr_engines.HINTS["rapidocr"]),
         ml=dict(ok=bool(ml_pkgs and model), model=str(model) if model else None,
-                hint=None if (ml_pkgs and model) else ('needs: pip install "pylogdigitizer[ml]"' if not ml_pkgs
+                hint=None if (ml_pkgs and model) else ("needs: pip install torch" if not ml_pkgs
                                                        else "no U-Net checkpoint in models/ (train one in notebook 02)")),
         plot=dict(ok=has("matplotlib"), hint=None if has("matplotlib") else "QC plot PNG needs: pip install matplotlib"),
         backend=ct.backend())

@@ -121,9 +121,9 @@ def test_optional_features_greyed_out(app_sid, monkeypatch):
     c, sid, root = app_sid
     from pylogdigitizer.app import routes
     real = routes.features
-    monkeypatch.setattr(routes, "features", lambda r: dict(real(r), ml=dict(ok=False, model=None, hint='needs: pip install "pylogdigitizer[ml]"'),
+    monkeypatch.setattr(routes, "features", lambda r: dict(real(r), ml=dict(ok=False, model=None, hint="needs: pip install torch"),
                                                              ocr=dict(ok=False, hint="needs rapidocr_onnxruntime")))
-    r = c.post(f"/app/api/{sid}/trace", json={"mode": "ml"}); assert r.status_code == 400 and "pylogdigitizer[ml]" in r.json()["detail"]
+    r = c.post(f"/app/api/{sid}/trace", json={"mode": "ml"}); assert r.status_code == 400 and "pip install torch" in r.json()["detail"]
     r = c.post(f"/app/api/{sid}/header/rerun"); assert r.status_code == 400 and "rapidocr" in r.json()["detail"]
     f = c.get("/app/api/info").json()["features"]; assert f["ml"]["ok"] is False and f["ml"]["hint"]
     assert c.get(f"/app/api/{sid}/state").status_code == 200                     # still alive

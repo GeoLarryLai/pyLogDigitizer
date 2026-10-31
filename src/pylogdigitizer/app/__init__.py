@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """app: pyLogDigitizer desktop app - a local, step-by-step browser UI following notebook 01.
 
-    pip install "pylogdigitizer[app]"
+    pip install pylogdigitizer
     pylogdigitizer-app [PROJECT_DIR]          # opens http://127.0.0.1:<free port>/
 
 Local only (127.0.0.1), works offline (vendored JS), writes nothing until an Export button is
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import fastapi, uvicorn  # noqa: F401
     except ImportError:
-        print('The app needs FastAPI and uvicorn: pip install "pylogdigitizer[app]"'); return 1
+        print("The app needs FastAPI and uvicorn: pip install fastapi uvicorn"); return 1
     from pylogdigitizer.app.shell import serve
     serve(create_app(a.project), "pyLogDigitizer", a.port, not a.no_browser)
     return 0

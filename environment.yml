@@ -15,6 +15,7 @@ dependencies:
   - uvicorn
   - httpx
   - matplotlib
+  - pytorch
   - jupyterlab
   - pytest
   - maturin

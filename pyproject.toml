@@ -23,15 +23,8 @@ classifiers = [
     "Development Status :: 3 - Alpha",
 ]
 dependencies = ["numpy", "pillow", "tifffile", "lasio", "pandas", "pyyaml", "opencv-python", "scikit-image", "scipy",
-                "rapidocr_onnxruntime"]   # default OCR engine (header + depth labels); pip wheels only, models bundled
-
-[project.optional-dependencies]
-fast = ["numba"]
-web = ["fastapi", "uvicorn", "httpx"]
-app = ["fastapi", "uvicorn"]
-ml = ["torch"]     # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
-test = ["pytest", "httpx", "fastapi", "uvicorn"]
-dev = ["pytest", "httpx", "jupyter", "matplotlib", "maturin"]
+                "rapidocr_onnxruntime",   # default OCR engine (header + depth labels); pip wheels only, models bundled
+                "numba", "fastapi", "uvicorn", "httpx", "matplotlib", "torch"]
 
 [project.urls]
 Homepage = "https://github.com/GeoLarryLai/pyLogDigitizer"
