@@ -1,4 +1,4 @@
-<p align="center"><img src="image/logo.png" alt="pyLogDigitizer" width="240"></p>
+<p align="center"><img src="image/logo.png" alt="pyLogDigitizer" width="200"></p>
 
 # pyLogDigitizer
 
