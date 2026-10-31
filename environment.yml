@@ -1,0 +1,25 @@
+name: pylogdigitizer
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - scipy
+  - pillow
+  - tifffile
+  - lasio
+  - pyyaml
+  - scikit-image
+  - numba
+  - fastapi
+  - uvicorn
+  - httpx
+  - matplotlib
+  - jupyterlab
+  - pytest
+  - maturin
+  - rust
+  - pip
+  - pip:
+      - opencv-python          # from pip, same cv2 that rapidocr_onnxruntime needs (one cv2 only)
+      - rapidocr_onnxruntime   # default OCR engine

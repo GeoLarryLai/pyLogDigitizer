@@ -1,0 +1,54 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pylogdigitizer"
+version = "0.1.0"
+description = "Semi-automatic and ML-assisted digitization of raster scans of petrophysical well logs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Larry Syu-Heng Lai" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Development Status :: 3 - Alpha",
+]
+dependencies = ["numpy", "pillow", "tifffile", "lasio", "pandas", "pyyaml", "opencv-python", "scikit-image", "scipy",
+                "rapidocr_onnxruntime"]   # default OCR engine (header + depth labels); pip wheels only, models bundled
+
+[project.optional-dependencies]
+fast = ["numba"]
+web = ["fastapi", "uvicorn", "httpx"]
+app = ["fastapi", "uvicorn"]
+ml = ["torch"]     # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
+test = ["pytest", "httpx", "fastapi", "uvicorn"]
+dev = ["pytest", "httpx", "jupyter", "matplotlib", "maturin"]
+
+[project.urls]
+Homepage = "https://github.com/GeoLarryLai/pyLogDigitizer"
+Repository = "https://github.com/GeoLarryLai/pyLogDigitizer"
+Issues = "https://github.com/GeoLarryLai/pyLogDigitizer/issues"
+
+[project.scripts]
+pylogdigitizer = "pylogdigitizer.cli:main"
+pylogdigitizer-app = "pylogdigitizer.app:main"
+
+[tool.maturin]
+python-source = "src"
+manifest-path = "rust/Cargo.toml"
+module-name = "pylogdigitizer.curve_tracing_rs"
+features = ["pyo3/extension-module"]
+# never package stray locally built extension modules (the Rust one is built by maturin per platform)
+exclude = ["src/pylogdigitizer/*.so", "src/pylogdigitizer/*.pyd", "src/pylogdigitizer/**/__pycache__/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

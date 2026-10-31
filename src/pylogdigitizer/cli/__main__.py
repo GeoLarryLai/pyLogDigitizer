@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Larry Syu-Heng Lai
+from pylogdigitizer.cli import main
+raise SystemExit(main())

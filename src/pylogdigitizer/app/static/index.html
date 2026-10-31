@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Larry Syu-Heng Lai -->
+<html lang="en"><head><meta charset="utf-8"><title>pyLogDigitizer</title>
+<link rel="stylesheet" href="/shell/static/shell.css"><link rel="stylesheet" href="/static/app.css">
+<script src="/core/static/vendor/openseadragon/openseadragon.min.js"></script></head>
+<body>
+<header id="top"><span class="brand">pyLogDigitizer</span><span class="doc" id="doc">no scan loaded</span>
+  <button id="undoBtn" title="Undo the last change (Z)" disabled>↶ Undo</button>
+  <button id="quitBtn" class="ghost" title="Stop the app">Quit</button></header>
+<nav id="rail"></nav>
+<main id="main"><div id="viewer"></div><canvas id="ov"></canvas>
+  <div id="fig" hidden></div>
+  <div id="empty"><div><h1>pyLogDigitizer</h1><p>Turns a scanned paper well log into a LAS file, on your own computer.<br>Start with <b>1 · Open a scan</b> on the right.</p></div></div>
+</main>
+<aside id="side"><div class="head"><h2 id="stepTitle"></h2><p class="lead" id="stepLead"></p>
+  <button class="main" id="mainBtn"></button><div class="note" id="dirty"></div></div>
+  <div class="body" id="stepBody"></div></aside>
+<footer id="bar"><span class="help" id="help"></span><span id="progtxt"></span><span class="prog" id="prog"><i></i></span></footer>
+<div id="toast"></div>
+<script src="/shell/static/shell.js"></script><script src="/static/app.js"></script>
+</body></html>

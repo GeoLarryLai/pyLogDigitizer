@@ -1,0 +1,37 @@
+name: kansas_kgs
+description: Kansas Geological Survey pre-1985 elog scans (1-bit TIFF, 300 dpi) paired with KGS LAS where available
+source:
+  scan_index: https://www.kgs.ku.edu/PRS/Ora_Archive/ks_elog_scans.zip
+  las_index: https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip
+  paired_wells_pre1985: 3115
+  unpaired_wells_pre1985: 69217
+scan:
+  format: tiff
+  color: bilevel
+  dpi: 300
+  orientation: depth_down
+  header_at_top: true
+depth:
+  unit: FT
+  label_column: between_track1_and_track2
+  typical_scales_ft_per_in: [1, 2, 5]   # verify per log (1:240, 1:600, 1:1200)
+tracks:
+  - {id: 1, type: linear, typical_curves: [GR, SP, CALI]}
+  - {id: 2, type: [linear, log], typical_curves: [ILD, ILM, LL8, SFL, RHOB, NPHI, DT]}
+  - {id: 3, type: [linear, log], typical_curves: [ILD, RHOB, NPHI, DT, DPHI]}
+mnemonic_aliases:
+  GR: [GAMMA RAY, GR API]
+  SP: [SPONTANEOUS POTENTIAL, SP]
+  ILD: [DEEP INDUCTION, ILD, RILD]
+  DT: [INTERVAL TRANSIT TIME, DELTA T, AC]
+  NPHI: [NEUTRON POROSITY, CNL, SNP, POROSITY]
+  RHOB: [BULK DENSITY, FORMATION DENSITY]
+  CALI: [CALIPER, HOLE DIAM]
+ml:
+  split: by_well
+  sizes: {train: [300, 500], val: [50, 100], test: [50, 100]}
+  fine_tune_min_logs: 5
+  confidence_review_threshold: 0.8
+  model_dir: models/kansas_kgs
+qc:
+  reference: paired_las   # KGS LAS may itself be digitized: reference, not ground truth

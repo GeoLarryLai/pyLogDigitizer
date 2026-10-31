@@ -1,0 +1,281 @@
+pyLogDigitizer example data - paired raster log scans + LAS files
+Source: Kansas Geological Survey (KGS), public data. Downloaded 2026-10-21.
+Selection: from the KGS elog-scan index (ks_elog_scans.txt) joined with the KGS LAS index (ks_las_files.txt) by KGS ID.
+All TIFFs: 1-bit black & white, 300 dpi. Header contents below were checked visually from header crops.
+
+QC NOTE: The KGS LAS files are used as QC/reference for digitization. Many KGS LAS files
+for pre-1985 wells were themselves digitized from paper logs (e.g., USA 'A' 16 LAS has no curve units;
+MOBIL 12-1 LAS was "Created by the KGS LAS Merge Web Applet" 3/27/2012), so they are a reference,
+not ground truth. Expect depth shifts, smoothing, and digitizing errors in them.
+
+======================================================================
+WELL 1: USA 'A' 16   -> folder USA_A_16_15-055-20536/
+======================================================================
+Operator:     Helmerich and Payne, Inc.
+API:          15-055-20536      KGS kid: 1006052147
+Location:     Finney County, Kansas; Sec. 31, T26S, R34W (SW NE NE NW), 600' FNL & 2040' FWL
+              Lat 37.7496493, Lon -101.0822956; KB 3043 ft; TD 7044 ft (Precambrian)
+Field:        Hugoton Gas Area (log header says Pleasant Prairie)
+Logging co.:  Gearhart (Gearhart-Owen), Run One, log date 25-Sep-1983
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006052147
+Files:
+  4341.tif  Dual Induction Laterolog (resistivity; ILD/ILM/LL + SP/GR expected), index interval 1530-7033 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/26S34/4341.tif   (2769 x 142394 px, 4.1 MB)
+  4342.tif  Compensated Density / Compensated Neutron Log (GR 0-150 API track 1), logged 1530-7030 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/26S34/4342.tif   (2769 x 228106 px, 5.6 MB)
+  1042553273.las  LAS 2.0; curves DEPTH, GR, NPHI, RHOB, ILD (units blank in file)
+            STRT 1476 / STOP 7050 / STEP 0.5 ft
+            Valid ranges: GR 1500-7031, ILD 1476-7047.5, NPHI 3077-7048, RHOB 3304-7047.5 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/26S34W/1042553273.las   (378 KB)
+            (index URL form: https://www.kgs.ku.edu/b_1/WebDocs/WellLogs/26S34W/1042553273.las)
+
+======================================================================
+WELL 2: MOBIL 12-1   -> folder MOBIL_12-1_15-189-20087/
+======================================================================
+Operator:     Ashland Oil & Refining Co.
+API:          15-189-20087      KGS kid: 1006156159
+Location:     Stevens County, Kansas; Sec. 12, T31S, R35W (C NE SE), 1980' FSL & 660' FEL
+              Lat 37.3638837, Lon -101.0700122; KB 2964 ft; TD 5700 ft (St. Louis Ls.)
+Field:        Cutter
+Logging co.:  Schlumberger (Liberal unit), Run One, log date 12-Feb-1970
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006156159
+Files:
+  227233.tif  Borehole Compensated Sonic - Gamma Ray (GR track + interval transit time), 4000-5793 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S35/227233.tif   (1447 x 21050 px, 0.5 MB)
+  227234.tif  Dual Induction Laterolog (SP track + resistivity), 1670-5691 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S35/227234.tif   (1407 x 42547 px, 1.2 MB)
+  227240.tif  Sidewall Neutron Porosity Log (caliper track 6-16 in + porosity %, LS matrix, -10..30 scale), 4000-5694 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S35/227240.tif   (1484 x 24100 px, 0.6 MB)
+  1044084189.las  LAS 2.0; curves DEPTH(FT), SP(MV), ILD(OHM-M), DT(USEC/FT), POROSITY(DEC = SNP)
+            STRT 1650 / STOP 5710 / STEP 0.5 ft
+            Valid ranges: SP 1658-5705.5, ILD 1666.5-5705, DT 3997-5707, POROSITY 3990.5-5708 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/31S35W/1044084189.las   (293 KB)
+  NOTE: the scans also contain GR and CALI, which are NOT in the LAS (no QC reference for those).
+
+
+======================================================================
+BATCH 2 (added 2026-10-21): 10 paired + 2 unpaired KGS wells
+======================================================================
+File URLs are the kgsimages.blob.core.windows.net locations used by KGS well pages (old kgs.ku.edu index URLs rewritten to the blob host; all downloaded OK).
+Scan log type and depth range come from the KGS scan index (LOG_TOP/LOG_BOTTOM); 'overlap' = feet overlapping LAS valid data.
+Same QC caveat: KGS LAS are reference, not ground truth (many were digitized from these same paper logs).
+
+WELL 3: Chitwood 12   -> folder Chitwood_12_15-151-10469/
+----------------------------------------------------------------------
+Operator:     Lion Oil Co.
+API:          15-151-10469      KGS kid: 1001272599
+Location:     PRATT County, Kansas; Sec. 23, T28S, R12W (W2 NE NW); Lat 37.5999569, Lon -98.6051435; KB 1878 ft; TD 4476 ft
+Field:        CHITWOOD
+Logging co.:  Schlumberger, log date 11-Nov-1945
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1001272599
+Files:
+  260243.tif  Composite Log, 337-4471 ft (overlap with LAS data 4134 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/28S12/260243.tif   (1060 x 22097 px, 0.3 MB)
+  260244.tif  Gamma Ray Neutron, 3450-4174 ft (overlap with LAS data 724 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/28S12/260244.tif   (1057 x 7931 px, 0.1 MB)
+  260245.tif  Laterolog Gamma Ray Neutron, 340-2610 ft (overlap with LAS data 2270 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/28S12/260245.tif   (1436 x 35509 px, 0.8 MB)
+  260246.tif  Sonic Log, 340-2602 ft (overlap with LAS data 2262 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/28S12/260246.tif   (1448 x 22347 px, 0.5 MB)
+  1044194859.las  LAS; STRT 300.0 / STOP 4481.0 / STEP 0.5 ft
+            curves (valid range ft): SP(MV) 308-4480, ILD(OHMM) 301-4470, GR:1(GAPI) 3450-4174, NEUT:1(API) 3450-4174, GR:2(GAPI) 331-2620, NEUT:2(API) 331-2620, CALI(IN) 301-2624, DT(US/F) 300-2623
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/28S12W/1044194859.las   (576 KB)
+
+WELL 4: Hall 'D' 4   -> folder Hall_D_4_15-051-05370/
+----------------------------------------------------------------------
+Operator:     CITIES SERVICE OIL COMPANY
+API:          15-051-05370      KGS kid: 1001218095
+Location:     ELLIS County, Kansas; Sec. 2, T12S, R17W (C  SE SE NW); Lat 39.0392026, Lon -99.1775081; KB 2118 ft; TD 3618 ft
+Field:        Bemis-Shutts
+Logging co.:  Welex, log date 06-Nov-1978
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1001218095
+Files:
+  193004.tif  Radioactivity Log, 3000-3616 ft (overlap with LAS data 616 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/12S17/193004.tif   (2669 x 17797 px, 0.5 MB)
+  193005.tif  Electrical Log, 277-3330 ft (overlap with LAS data 3053 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/12S17/193005.tif   (2769 x 31463 px, 0.8 MB)
+  1043914416.las  LAS; STRT 250.0 / STOP 3620.0 / STEP 0.5 ft
+            curves (valid range ft): GR(API) 2986-3613, NEUT(API) 2990-3619, SP(MV) 250-3611, ILD(OHM-M) 250-3610
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/12S17W/1043914416.las   (257 KB)
+
+WELL 5: Minzer 1   -> folder Minzer_1_15-077-30177/
+----------------------------------------------------------------------
+Operator:     Continental Oil Co.
+API:          15-077-30177      KGS kid: 1002920583
+Location:     HARPER County, Kansas; Sec. 11, T34S, R9W (SW SW SW); Lat 37.0951184, Lon -98.2734016; KB 1310 ft; TD 5225 ft
+Field:        WILDCAT
+Logging co.:  Halliburton, log date 21-Jun-1955
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002920583
+Files:
+  171662.tif  Radiation Guard, 0-5225 ft (overlap with LAS data 5130 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/34S9/171662.tif   (1473 x 35248 px, 0.7 MB)
+  171665.tif  Radioactivity Log, 3000-4720 ft (overlap with LAS data 1720 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/34S9/171665.tif   (1314 x 15788 px, 0.2 MB)
+  1044076084.las  LAS; STRT 90.0 / STOP 5220.0 / STEP 0.5 ft
+            curves (valid range ft): GR(GAPI) 90-5214, NEUT(-) 100-5220, ILD(OHMM) 3002-5220
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/34S09W/1044076084.las   (464 KB)
+
+WELL 6: MAKEMSON 'A' 1   -> folder MAKEMSON_A_1_15-081-20018/
+----------------------------------------------------------------------
+Operator:     Anadarko Production Co.
+API:          15-081-20018      KGS kid: 1006072498
+Location:     Haskell County, Kansas; Sec. 31, T30S, R34W (SE SE); Lat 37.3895331, Lon -101.0729862; KB 2916 ft; TD 5827 ft
+Field:        WILDCAT
+Logging co.:  Dresser Atlas, log date 20-Aug-1969
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006072498
+Files:
+  225991.tif  Induction Electrolog, 1695-5825 ft (overlap with LAS data 4130 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/30S34/225991.tif   (1396 x 53022 px, 1.0 MB)
+  225992.tif  BHC Acoustilog, 1695-5826 ft (overlap with LAS data 4131 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/30S34/225992.tif   (1399 x 39475 px, 0.8 MB)
+  225994.tif  Minilog, 2780-5830 ft (overlap with LAS data 3050 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/30S34/225994.tif   (1374 x 21378 px, 0.4 MB)
+  1044080517.las  LAS; STRT 1658.0 / STOP 5840.0 / STEP 0.5 ft
+            curves (valid range ft): ILD(OHM-M) 1695-5839, GR(API) 1658-5816, DT(USEC/FT) 1686-5838
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/30S34W/1044080517.las   (230 KB)
+
+WELL 7: ELY 1   -> folder ELY_1_15-135-19136/
+----------------------------------------------------------------------
+Operator:     HELLAR DRILLING CO. AND FERGUSON OIL CO.
+API:          15-135-19136      KGS kid: 1044138637
+Location:      County, Kansas; Sec. 33, T19S, R21W (SW NE); Lat 38.3585348, Lon -99.6469982; KB 2298 ft; TD 4471 ft
+Field:        WILDCAT
+Logging co.:  Welex, log date 05-Aug-1963
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1044138637
+Files:
+  341411.tif  Acoustic Velocity Log, 0-4464 ft (overlap with LAS data 717 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/19S21/341411.tif   (1378 x 25785 px, 0.8 MB)
+  341412.tif  Caliper Guard Log, 3700-4470 ft (overlap with LAS data 718 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/19S21/341412.tif   (1354 x 8706 px, 0.3 MB)
+  341413.tif  Fracture Finder Micro Seismogram Log, 4100-4464 ft (overlap with LAS data 364 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/19S21/341413.tif   (1341 x 5025 px, 0.2 MB)
+  1006347170.las  LAS; STRT 3746.0 / STOP 4465.5 / STEP 0.5 ft
+            curves (valid range ft): RES(OHMM) 3747-4466, GR(GAPI) 3750-4462, DT(US/F) 3748-4464
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/19S21W/1006347170.las   (65 KB)
+
+WELL 8: George B. Strong Unit 8   -> folder George_B_Strong_Unit_8_15-175-20098/
+----------------------------------------------------------------------
+Operator:     Mobil Oil Corp.
+API:          15-175-20098      KGS kid: 1006142835
+Location:     Seward County, Kansas; Sec. 6, T31S, R34W (NW NW); Lat 37.3858141, Lon -101.0658489; KB 2878 ft; TD 5650 ft
+Field:        CUTTER
+Logging co.:  Schlumberger, log date 26-Feb-1970
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006142835
+Files:
+  226280.tif  Dual Induction Laterolog, 664-5646 ft (overlap with LAS data 4982 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S34/226280.tif   (1404 x 53497 px, 1.1 MB)
+  226282.tif  Borehole Compensated Sonic Gamma Ray, 4000-5647 ft (overlap with LAS data 1647 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S34/226282.tif   (1413 x 20631 px, 0.4 MB)
+  226283.tif  Compensated Formation Density Log Gamma-Gamma, 5174-5656 ft (overlap with LAS data 482 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/31S34/226283.tif   (1388 x 16259 px, 0.3 MB)
+  1044080524.las  LAS; STRT 630.0 / STOP 5680.0 / STEP 0.5 ft
+            curves (valid range ft): SP(MV) 630-5680, ILD(OHM-M) 630-5678, RHOB(GM/CC) 5176-5666, DT(USEC/FT) 3958-5650
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/31S34W/1044080524.las   (373 KB)
+
+WELL 9: Swanson 1   -> folder Swanson_1_15-117-20008/
+----------------------------------------------------------------------
+Operator:     Venus Oil Co. and others
+API:          15-117-20008      KGS kid: 1002880630
+Location:     MARSHALL County, Kansas; Sec. 5, T3S, R10E (C   NE NE); Lat 39.8255717, Lon -96.3168846; KB 1360 ft; TD 1053 ft
+Field:        WILDCAT
+Logging co.:  Great Guns, log date 20-Apr-1978
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002880630
+Files:
+  277930.tif  Dual Induction Laterolog, 300-1047 ft (overlap with LAS data 747 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/E/3S10/277930.tif   (1435 x 19547 px, 0.3 MB)
+  277931.tif  Compensated Formation Density Log, 50-1052 ft (overlap with LAS data 1002 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/E/3S10/277931.tif   (1422 x 20309 px, 0.4 MB)
+  1044077634.las  LAS; STRT 50.0 / STOP 1078.0 / STEP 0.5 ft
+            curves (valid range ft): ILD(OHMM) 300-1060, GR(GAPI) 50-1052, RHOB(G/C3) 51-1066
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/03S10E/1044077634.las   (95 KB)
+
+WELL 10: WEATHERFORD 'B' 1   -> folder WEATHERFORD_B_1_15-129-20464/
+----------------------------------------------------------------------
+Operator:     CITIES SERVICE OIL COMPANY
+API:          15-129-20464      KGS kid: 1006095133
+Location:      County, Kansas; Sec. 13, T33S, R43W (SE NW NE SW); Lat 37.1760853, Lon -101.9466272; KB 3586 ft; TD 5015 ft
+Field:        WINTER NORTH
+Logging co.:  Schlumberger, log date 12-Sep-1980
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006095133
+Files:
+  194289.tif  Dual Induction SFL, 1362-5008 ft (overlap with LAS data 3641 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/33S43/194289.tif   (2769 x 103456 px, 2.6 MB)
+  194290.tif  Compensated Neutron Formation Density, 1362-5013 ft (overlap with LAS data 3641 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/W/33S43/194290.tif   (2769 x 143342 px, 4.1 MB)
+  1001178972.las  LAS; STRT 1360.0 / STOP 5003.0 / STEP 0.5 ft
+            curves (valid range ft): CALI(IN) 1361-5003, DPHI(-) 1361-5003, GR(GAPI) 1360-5002, ILD(-) 1361-5002, ILM(-) 1361-5002, NPHI(-) 1362-5002, RHOB(G/C3) 1980-5000, SFL(-) 1361-5002, SP(MV) 1360-5003
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/33S43W/1001178972.las   (958 KB)
+
+WELL 11: GOHEEN UNIT 1   -> folder GOHEEN_UNIT_1_15-191-30175/
+----------------------------------------------------------------------
+Operator:     MACK OIL CORP.
+API:          15-191-30175      KGS kid: 1002953301
+Location:     SUMNER County, Kansas; Sec. 35, T30S, R1E (SW SW NE); Lat 37.4005338, Lon -97.2837218; KB 1226 ft; TD 4370 ft
+Field:        BELLE PLAINE
+Logging co.:  GO--Gearhart-Owen, log date 12-Nov-1965
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002953301
+Files:
+  171201.tif  Cement Bond Log, 2500-3700 ft (overlap with LAS data 1200 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/30S1/171201.tif   (2769 x 20634 px, 0.7 MB)
+  171202.tif  Dual Induction Laterolog, 215-3966 ft (overlap with LAS data 1690 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/30S1/171202.tif   (1489 x 32897 px, 0.8 MB)
+  171203.tif  Sonic Log Gamma Ray, 2300-3969 ft (overlap with LAS data 1669 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/30S1/171203.tif   (1489 x 34150 px, 0.8 MB)
+  171204.tif  Compensated Formation Density Log, 2300-3969 ft (overlap with LAS data 1669 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/30S1/171204.tif   (1489 x 16641 px, 0.3 MB)
+  1042553292.las  LAS; STRT 2276.0 / STOP 3999.0 / STEP 0.5 ft
+            curves (valid range ft): FORMATION(-) 2695-3976, ILD(-) 2280-3977, GR(-) 2286-3946, DT(-) 2276-3998
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/30S01E/1042553292.las   (124 KB)
+
+WELL 12: BACASTOW 1   -> folder BACASTOW_1_15-035-23415/
+----------------------------------------------------------------------
+Operator:     CLYDE PETROLEUM
+API:          15-035-23415      KGS kid: 1002904764
+Location:     Cowley County, Kansas; Sec. 11, T35S, R4E (NE SW SW); Lat 37.0156037, Lon -96.9636654; KB 1154 ft; TD 3900 ft
+Field:        UNKNOWN
+Logging co.:  Birdwell, log date n/a in index
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002904764
+Files:
+  169723.tif  Dual Porosity Stratalog, 3150-3900 ft (overlap with LAS data 750 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/35S4/169723.tif   (2738 x 20119 px, 0.7 MB)
+  169724.tif  Acoustic Borehole Compensated, 220-3881 ft (overlap with LAS data 3661 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/35S4/169724.tif   (2799 x 76650 px, 2.3 MB)
+  169725.tif  Compensated Density and Neutron Porosity, 226-3892 ft (overlap with LAS data 3666 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/35S4/169725.tif   (2837 x 148319 px, 4.7 MB)
+  169726.tif  Dual Induction Focused Log, 254-3889 ft (overlap with LAS data 3635 ft)
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog4/E/35S4/169726.tif   (2809 x 101831 px, 3.2 MB)
+  1043694739.las  LAS; STRT 220.0 / STOP 3900.0 / STEP 0.5 ft
+            curves (valid range ft): DT(USEC/FT) 220-3900, NPHI(PU) 220-3900, ILD(OHM-M) 250-3900, GR(API) 232-3900
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/35S04E/1043694739.las   (332 KB)
+
+WELL 13 (UNPAIRED - no LAS, never digitized by KGS): Calbeck 6   -> folder unpaired/Calbeck_6_15-151-10821/
+----------------------------------------------------------------------
+Operator:     Deep Rock Oil Corp.
+API:          15-151-10821      KGS kid: 1002938539
+Location:     Pratt County, Kansas; Sec. 33, T26S, R13W (NE NE NE); Lat 37.7470826, Lon -98.7400494; KB 1952 ft; TD 4425 ft
+Field:        CHANCE
+Logging co.:  Schlumberger, log date 27-Nov-1950
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002938539  (has KGS 'Tops Data')
+Files:
+  278167.tif  Spontaneous-Potential Resistivity, 798-4400 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/26S13/278167.tif   (1497 x 20941 px, 0.4 MB)
+  278169.tif  Gamma Ray Neutron, 3500-4426 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/W/26S13/278169.tif   (1501 x 13594 px, 0.3 MB)
+  Validation: KGS formation tops (well page) + nearby LAS well in the same section: Calbeck 9 (kid 1001271795, https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1001271795)
+            NEARBY_1001271795_1043685628.las  <- https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/26S13W/1043685628.las
+
+WELL 14 (UNPAIRED - no LAS, never digitized by KGS): Rising 1   -> folder unpaired/Rising_1_15-035-21757/
+----------------------------------------------------------------------
+Operator:     Range Oil Co., Inc.
+API:          15-035-21757      KGS kid: 1002903258
+Location:     Cowley County, Kansas; Sec. 3, T33S, R5E (SE NW); Lat 37.2097249, Lon -96.8721695; KB 1305 ft; TD 3200 ft
+Field:        MADDIX NORTH
+Logging co.:  Petro-Log, log date 18-Dec-1977
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1002903258  (has KGS 'Tops Data')
+Files:
+  208461.tif  Induction Electric Log, 168-3199 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/E/33S5/208461.tif   (2685 x 52206 px, 1.6 MB)
+  208462.tif  Compensated Density, 1850-3199 ft
+            https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/E/33S5/208462.tif   (2700 x 29716 px, 1.1 MB)
+  Validation: KGS formation tops (well page) + nearby LAS well in the same section: West Maddix Unit 7 WSW (kid 1043999431, https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1043999431)
+            NEARBY_1043999431_1044819475.las  <- https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/kcc_logs_2014/1044819475.las

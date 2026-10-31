@@ -1,0 +1,39 @@
+{
+ "well": "GOHEEN_UNIT_1",
+ "scan": "171203.tif",
+ "scan_path": "example_data/GOHEEN_UNIT_1_15-191-30175/171203.tif",
+ "curve": "GR",
+ "track": "track1",
+ "section": {
+  "kind": "track",
+  "track": "track1",
+  "rows": [
+   1800,
+   15406
+  ],
+  "width": 304
+ },
+ "panel_rows": [
+  1800,
+  15406
+ ],
+ "width": 304,
+ "source": "assisted_tracing",
+ "backend": "rust",
+ "n_anchors": 8,
+ "excluded": [],
+ "qc": {
+  "r": 0.6710591610648713,
+  "rmse": 39.643790118797305,
+  "bias": 0.8010797756075374,
+  "mae": 22.769428125026785,
+  "n": 3321,
+  "shift_ft": 0.0,
+  "n_anchors": 8
+ },
+ "format_version": 1,
+ "shape": [
+  13606,
+  304
+ ]
+}

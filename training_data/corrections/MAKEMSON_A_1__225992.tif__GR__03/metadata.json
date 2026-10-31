@@ -1,0 +1,39 @@
+{
+ "well": "MAKEMSON_A_1",
+ "scan": "225992.tif",
+ "scan_path": "example_data/MAKEMSON_A_1_15-081-20018/225992.tif",
+ "curve": "GR",
+ "track": "track1",
+ "section": {
+  "kind": "track",
+  "track": "track1",
+  "rows": [
+   9236,
+   32959
+  ],
+  "width": 376
+ },
+ "panel_rows": [
+  9236,
+  32959
+ ],
+ "width": 376,
+ "source": "assisted_tracing",
+ "backend": "rust",
+ "n_anchors": 10,
+ "excluded": [],
+ "qc": {
+  "r": 0.6422739075316937,
+  "rmse": 28.88367820631681,
+  "bias": -9.704545754161225,
+  "mae": 12.24574680872179,
+  "n": 6198,
+  "shift_ft": 0.0,
+  "n_anchors": 10
+ },
+ "format_version": 1,
+ "shape": [
+  23723,
+  376
+ ]
+}

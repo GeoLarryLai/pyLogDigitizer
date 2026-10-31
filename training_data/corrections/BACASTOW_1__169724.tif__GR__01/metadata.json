@@ -1,0 +1,39 @@
+{
+ "well": "BACASTOW_1",
+ "scan": "169724.tif",
+ "scan_path": "example_data/BACASTOW_1_15-035-23415/169724.tif",
+ "curve": "GR",
+ "track": "track1",
+ "section": {
+  "kind": "track",
+  "track": "track1",
+  "rows": [
+   4346,
+   62773
+  ],
+  "width": 752
+ },
+ "panel_rows": [
+  4346,
+  62773
+ ],
+ "width": 752,
+ "source": "assisted_tracing",
+ "backend": "rust",
+ "n_anchors": 10,
+ "excluded": [],
+ "qc": {
+  "r": 0.7808025461126359,
+  "rmse": 23.861314075272915,
+  "bias": 6.039935459919337,
+  "mae": 14.412695225064349,
+  "n": 7336,
+  "shift_ft": 0.0,
+  "n_anchors": 10
+ },
+ "format_version": 1,
+ "shape": [
+  58427,
+  752
+ ]
+}

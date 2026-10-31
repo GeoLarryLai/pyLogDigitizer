@@ -1,0 +1,39 @@
+{
+ "well": "WEATHERFORD_B_1",
+ "scan": "194290.tif",
+ "scan_path": "example_data/WEATHERFORD_B_1_15-129-20464/194290.tif",
+ "curve": "GR",
+ "track": "track1",
+ "section": {
+  "kind": "track",
+  "track": "track1",
+  "rows": [
+   9432,
+   70718
+  ],
+  "width": 752
+ },
+ "panel_rows": [
+  9432,
+  70718
+ ],
+ "width": 752,
+ "source": "assisted_tracing",
+ "backend": "rust",
+ "n_anchors": 10,
+ "excluded": [],
+ "qc": {
+  "r": 0.42818739977442755,
+  "rmse": 38.52923813830129,
+  "bias": -15.094590976098965,
+  "mae": 21.62310555429123,
+  "n": 6806,
+  "shift_ft": 0.0,
+  "n_anchors": 10
+ },
+ "format_version": 1,
+ "shape": [
+  61286,
+  752
+ ]
+}

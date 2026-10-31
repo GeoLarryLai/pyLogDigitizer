@@ -1,0 +1,87 @@
+# Per-well run settings for the Kansas KGS paired example wells (used by scripts/run_regression.py
+# and notebook 01). Only facts read off the log header go here (track, scale ends, backup scale);
+# layout, extents, panel width and depth labels are detected automatically.
+#   scale_source: header = read from the scan header; assumed = vendor/era convention, not verified
+#   (r is unaffected by a wrong linear scale, RMSE/bias are not; log/linear and direction matter).
+#   first_depth: optional fallback when OCR is unavailable (value of the first depth label).
+profile: kansas_kgs
+data_dir: example_data
+defaults: {scale_type: linear, use_hatch: false, wrap_side: right}
+wells:
+  - name: USA_A_16
+    dir: USA_A_16_15-055-20536
+    las: 1042553273.las
+    runs:
+      - {scan: 4342.tif, curve: GR, track: track1, scale: [0, 150], backup: [150, 300], wrap_side: right, use_hatch: true, scale_source: header, first_depth: 1500}
+      - {scan: 4341.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: MOBIL_12-1
+    dir: MOBIL_12-1_15-189-20087
+    las: 1044084189.las
+    runs:
+      - {scan: 227233.tif, curve: DT, track: track2, scale: [100, 40], backup: [160, 100], wrap_side: left, scale_source: header, first_depth: 4000}
+      - {scan: 227234.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: header}
+  - name: Chitwood_12
+    dir: Chitwood_12_15-151-10469
+    las: 1044194859.las
+    runs:
+      - {scan: 260246.tif, curve: DT, track: track2, scale: [140, 40], backup: [240, 140], wrap_side: left, scale_source: header}
+      - {scan: 260245.tif, curve: "GR:2", track: track1, scale: [0, 100], scale_source: assumed}
+  - name: ELY_1
+    dir: ELY_1_15-135-19136
+    las: 1006347170.las
+    runs:
+      - {scan: 341411.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
+      - {scan: 341411.tif, curve: DT, track: track2, scale: [140, 40], scale_source: assumed}
+  - name: GOHEEN_UNIT_1
+    dir: GOHEEN_UNIT_1_15-191-30175
+    las: 1042553292.las
+    runs:
+      - {scan: 171203.tif, curve: GR, track: track1, scale: [0, 160], backup: [160, 320], wrap_side: right, use_hatch: true, scale_source: header}
+      - {scan: 171203.tif, curve: DT, track: track2, scale: [100, 40], backup: [160, 100], wrap_side: left, scale_source: header}
+      - {scan: 171202.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: George_B_Strong_8
+    dir: George_B_Strong_Unit_8_15-175-20098
+    las: 1044080524.las
+    runs:
+      - {scan: 226282.tif, curve: DT, track: track2, scale: [100, 40], backup: [160, 100], wrap_side: left, scale_source: assumed}
+      - {scan: 226280.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: Hall_D_4
+    dir: Hall_D_4_15-051-05370
+    las: 1043914416.las
+    runs:
+      - {scan: 193004.tif, curve: GR, track: track1, scale: [10, 110], backup: [110, 210], wrap_side: right, scale_source: header}
+      - {scan: 193005.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: MAKEMSON_A_1
+    dir: MAKEMSON_A_1_15-081-20018
+    las: 1044080517.las
+    runs:
+      - {scan: 225992.tif, curve: GR, track: track1, scale: [0, 120], scale_source: header}
+      - {scan: 225992.tif, curve: DT, track: track2, scale: [100, 40], scale_source: header}
+      - {scan: 225991.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: Minzer_1
+    dir: Minzer_1_15-077-30177
+    las: 1044076084.las
+    runs:
+      - {scan: 171665.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
+      - {scan: 171662.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
+  - name: Swanson_1
+    dir: Swanson_1_15-117-20008
+    las: 1044077634.las
+    runs:
+      - {scan: 277931.tif, curve: GR, track: track1, scale: [0, 160], backup: [160, 320], wrap_side: right, use_hatch: true, scale_source: header}
+      - {scan: 277931.tif, curve: RHOB, track: track2, scale: [2.0, 3.0], backup: [1.0, 2.0], wrap_side: left, scale_source: header}
+      - {scan: 277930.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: WEATHERFORD_B_1
+    dir: WEATHERFORD_B_1_15-129-20464
+    las: 1001178972.las
+    runs:
+      - {scan: 194290.tif, curve: GR, track: track1, scale: [0, 150], backup: [150, 300], wrap_side: right, use_hatch: true, scale_source: header}
+      - {scan: 194290.tif, curve: NPHI, track: track2, scale: [30, -10], scale_source: header, note: "% on the log; LAS may be v/v (r unaffected)"}
+      - {scan: 194289.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
+  - name: BACASTOW_1
+    dir: BACASTOW_1_15-035-23415
+    las: 1043694739.las
+    runs:
+      - {scan: 169724.tif, curve: GR, track: track1, scale: [0, 150], scale_source: header}
+      - {scan: 169724.tif, curve: DT, track: track2, scale: [140, 40], scale_source: header}
+      - {scan: 169726.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}

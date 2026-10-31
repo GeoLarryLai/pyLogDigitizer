@@ -1,0 +1,26 @@
+pyLogDigitizer
+Copyright 2026 Larry Syu-Heng Lai
+
+This product is licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version (AGPL-3.0-or-later; see LICENSE).
+
+This product includes third-party software:
+
+- OpenSeadragon 4.1.1 (vendored, unmodified, in src/pylogdigitizer/web_editor/static/vendor/openseadragon/)
+  Copyright (C) 2009 CodePlex Foundation; Copyright (C) 2010-2024 OpenSeadragon contributors.
+  BSD 3-Clause License - see src/pylogdigitizer/web_editor/static/vendor/openseadragon/LICENSE.txt
+
+Example data in example_data/ (scans and LAS files from the Kansas Geological Survey) is not
+covered by this license; see example_data/SOURCES.txt for sources and terms.
+
+Python dependencies (NumPy, OpenCV, scikit-image, lasio, FastAPI, uvicorn, ...) are installed
+separately and are under their own licenses.
+
+License compatibility: OpenSeadragon (BSD-3-Clause, notice above and its LICENSE.txt
+kept verbatim) and the permissive (BSD/MIT/Apache-2.0) Python and Rust dependencies
+are compatible with AGPLv3 and remain under their own licenses.
+
+Network use (AGPL-3.0 section 13): if you modify pyLogDigitizer and let other people
+interact with it over a network (for example by serving the FastAPI web editor to
+remote users), you must offer those users the Corresponding Source of your modified
+version. Running the editor locally for yourself creates no such obligation.
