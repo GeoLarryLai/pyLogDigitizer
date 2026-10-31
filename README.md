@@ -1,8 +1,8 @@
-<p align="center"><img src="image/logo.png" alt="pyLogDigitizer" width="160"></p>
+<p align="center"><img src="image/logo.png" alt="pyLogDigitizer" width="240"></p>
 
 # pyLogDigitizer
 
-[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23832013.svg)](https://doi.org/10.5281/zenodo.23832013)
+[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23832013.svg)](https://doi.org/10.5281/zenodo.23832013) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 v0.1.0
 
@@ -77,6 +77,4 @@ R["depth"], R["value"], R["conf"]           # then las_export.resample + write_l
 `backup=(150, 300)` is the **backup scale**: when a curve runs off the edge of its track it is redrawn from the other
 edge on a second scale, and the tracer unwraps it.
 
-## License
-
-Copyright (C) 2026 Larry Syu-Heng Lai. AGPL-3.0-or-later (`LICENSE`, `NOTICE`).
+Third-party notices and data credits: [`NOTICE`](NOTICE).
