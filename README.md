@@ -6,8 +6,6 @@
 
 v0.1.0
 
-![From a scanned paper log to a LAS curve](image/hero_scan_to_las.png)
-
 Turns scanned paper well logs (TIFF) into LAS files, with a local browser app to check and fix every step.
 
 Status: early-stage research software. APIs may change; check every digitized curve before use.
@@ -15,9 +13,15 @@ Status: early-stage research software. APIs may change; check every digitized cu
 ## Installation
 
 ```bash
+pip install "pylogdigitizer[app,fast]"
+pip install "pylogdigitizer[ml]"            # optional: PyTorch U-Net cost map
+```
+
+From source (builds the Rust tracer, needs a Rust toolchain):
+
+```bash
 git clone https://github.com/GeoLarryLai/pyLogDigitizer && cd pyLogDigitizer
-pip install ".[app,fast]"                   # builds the Rust tracer (needs a Rust toolchain)
-pip install ".[ml]"                         # optional: PyTorch U-Net cost map
+pip install ".[app,fast]"
 ```
 
 Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release --extras app`.
@@ -27,6 +31,8 @@ Without the Rust part everything still works, only slower.
 
 Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI](https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI)
 
+![From a scanned paper log to a LAS curve](image/hero_scan_to_las.png)
+
 ## Key Features
 
 - **Layout and calibration:** finds tracks and grids, deskews, reads depth labels (OCR) and calibrates scales,
@@ -35,7 +41,7 @@ Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.ZE
 - **Optional ML cost map:** a U-Net learns from your corrected traces; batch runs send low-confidence curves to review.
 - **QC and export:** compares with a reference LAS and writes LAS 2.0. Everything runs locally; nothing is uploaded.
 
-## Results
+## Examples
 
 ![Tracing in the app](image/app_07_trace.png)
 *The guided app: a traced curve on the scan, ready to review and fix.*
