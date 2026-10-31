@@ -2,7 +2,7 @@
 
 # pyLogDigitizer
 
-[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.ZENODO_CONCEPT_DOI.svg)](https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI)
+[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23832013.svg)](https://doi.org/10.5281/zenodo.23832013)
 
 v0.1.0
 
@@ -30,7 +30,7 @@ Without the Rust part everything still works, only slower.
 
 ## Citation
 
-Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI](https://doi.org/10.5281/zenodo.ZENODO_CONCEPT_DOI)
+Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23832013](https://doi.org/10.5281/zenodo.23832013)
 
 ![From a scanned paper log to a LAS curve](image/hero_scan_to_las.png)
 
