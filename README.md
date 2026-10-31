@@ -13,7 +13,8 @@ Status: early-stage research software. APIs may change; check every digitized cu
 ## Installation
 
 ```bash
-pip install "pylogdigitizer[app,fast]"
+pip install pylogdigitizer
+pip install "pylogdigitizer[app,fast]"      # optional: browser app and faster tracing
 pip install "pylogdigitizer[ml]"            # optional: PyTorch U-Net cost map
 ```
 
