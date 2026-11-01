@@ -1,8 +1,11 @@
 <p align="center"><img src="image/logo.png" alt="pyLogDigitizer" width="220"></p>
+<p align="center">
+<a href="https://doi.org/10.5281/zenodo.23832013"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23832013-blue" alt="DOI"></a> <a href="https://github.com/GeoLarryLai/pyLogDigitizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-lightgrey" alt="License"></a>
+<br>
+<a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/pypi/pyversions/pylogdigitizer?color=orange" alt="Python versions"></a> <a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/pypi/v/pylogdigitizer?color=orange" alt="PyPI version"></a> <a href="https://pepy.tech/projects/pylogdigitizer"><img src="https://img.shields.io/pepy/dt/pylogdigitizer?label=pypi%20downloads&color=orange" alt="PyPI downloads"></a>
+</p>
 
 # pyLogDigitizer
-
-[![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23832013.svg)](https://doi.org/10.5281/zenodo.23832013) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
