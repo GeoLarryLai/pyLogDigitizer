@@ -2,7 +2,7 @@
 <p align="center">
 <a href="https://doi.org/10.5281/zenodo.23832013"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23832013-blue" alt="DOI"></a> <a href="https://github.com/GeoLarryLai/pyLogDigitizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-lightgrey" alt="License"></a>
 <br>
-<a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/badge/python-3.10%2B-lightgrey" alt="Python versions"></a> <a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/pypi/v/pylogdigitizer?color=orange" alt="PyPI version"></a> <a href="https://pepy.tech/projects/pylogdigitizer"><img src="https://img.shields.io/pepy/dt/pylogdigitizer?label=pypi%20downloads&color=orange" alt="PyPI downloads"></a>
+<a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/badge/python-3.10%2B-lightgrey" alt="Python versions"></a> <a href="https://pypi.org/project/pylogdigitizer/"><img src="https://img.shields.io/pypi/v/pylogdigitizer?color=orange" alt="PyPI version"></a> <a href="https://pepy.tech/projects/pylogdigitizer"><img src="https://img.shields.io/pepy/dt/pylogdigitizer?label=pypi%20downloads&color=orange" alt="PyPI downloads"></a> <a href="https://anaconda.org/conda-forge/pylogdigitizer"><img src="https://img.shields.io/conda/vn/conda-forge/pylogdigitizer?label=conda-forge&color=green" alt="conda-forge version"></a> <a href="https://anaconda.org/conda-forge/pylogdigitizer"><img src="https://img.shields.io/conda/dn/conda-forge/pylogdigitizer?label=conda%20downloads&color=green" alt="conda downloads"></a>
 </p>
 
 # pyLogDigitizer
