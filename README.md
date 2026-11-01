@@ -38,10 +38,12 @@ Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23
 ## What it can do
 
 - Find tracks and grids, deskew the scan, read depth labels (OCR) and calibrate scales, including backup-scale wraparound
-- Trace curves with a fast dynamic-programming tracer (Rust, with a Python fallback); click anchors to re-trace just one part
+- Trace curves with a fast dynamic-programming tracer (Rust, with a Python fallback)
+- Fix a trace in the app: click the real curve to pin it, drag a pin, or re-trace just the part inside a cursor circle
+- Nudge track edges, set a scale from two grid lines, and click any OCR word in the header to correct it (the scale is re-fitted)
 - Optionally train a U-Net cost map on your own corrected traces; batch runs send low-confidence curves to review
 - Compare results against a reference LAS and write LAS 2.0
-- Work through a guided browser app, a web editor, the command line or Python
+- Work through one local browser app, the command line or Python
 
 ## Examples
 
@@ -62,9 +64,11 @@ from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOUR
 
 ```bash
 pylogdigitizer info example_data/USA_A_16_15-055-20536/4342.tif   # scan size and resolution
-pylogdigitizer-app .                        # guided app at http://127.0.0.1 (local only)
-pylogdigitizer editor . --open              # web editor
+pylogdigitizer-app .                        # the app at http://127.0.0.1 (local only); `pylogdigitizer editor .` is an alias
 ```
+
+The ML cost map (`cost_mode="ml"` or `"blend"`) needs PyTorch (`pip install torch`) and a trained checkpoint. Without
+them the tracer uses the conventional cost map.
 
 The same from Python:
 

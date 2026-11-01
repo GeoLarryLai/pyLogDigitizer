@@ -41,3 +41,5 @@ table.t tr.edited td:first-child::after{content:" ✎";color:var(--warn)} table.
 #toast div{background:#1d1d1f;color:#fff;border-radius:6px;padding:8px 12px;box-shadow:0 4px 14px rgba(0,0,0,.2)} #toast div.e{background:var(--err)}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px} .metrics div{background:#f6f6f4;border-radius:6px;padding:6px;text-align:center}
 .metrics b{display:block;font-size:15px} .metrics span{font-size:11px;color:var(--mute)}
+
+.prog.err>i{background:#c0392b} #progtxt.err{color:#b02a1e;font-weight:600;white-space:normal;max-width:60vw}

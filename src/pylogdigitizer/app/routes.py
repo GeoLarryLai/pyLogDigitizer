@@ -61,6 +61,9 @@ def snapshot(e: _Entry):
         d[k] = dict(v) if isinstance(v, dict) else (list(v) if isinstance(v, list) else v)
     d["T"] = dict(s.T) if s.T is not None else None
     d["app"] = json.loads(json.dumps(e.app.get("header_rows")))
+    h = getattr(e, "header", None)          # header OCR words/proposals (small): word corrections are undoable
+    d["header"] = (dict(h, tracks={k: dict(t, words=[dict(w) for w in t["words"]], curves=list(t["curves"])) for k, t in h["tracks"].items()},
+                        curves=list(h.get("curves", []))) if isinstance(h, dict) and "tracks" in h else h)
     return d
 
 
@@ -71,6 +74,8 @@ def restore(e: _Entry, d) -> None:
     s.T = d["T"]
     if d["app"] is not None:
         e.app["header_rows"] = d["app"]
+    if "header" in d:
+        e.header = d["header"]
 
 
 def push_undo(e: _Entry, label: str) -> None:
@@ -252,6 +257,40 @@ def install(app, root: Path, runner) -> None:
             e.app["header_choice"] = body["choice"]
         return header(sid)
 
+    @app.get("/app/api/{sid}/header/words")
+    def header_words(sid: str):
+        """All OCR words of the header, per track: [{track, i, text, conf, x0, y0, x1, y1, corrected}]."""
+        e = get(sid)
+        out = [dict(track=nm, i=i, **{k: w.get(k) for k in ("text", "conf", "x0", "y0", "x1", "y1", "corrected", "ocr_text")})
+               for nm, t in ((e.header or {}).get("tracks") or {}).items() for i, w in enumerate(t["words"])]
+        return _clean(dict(words=out))
+
+    @app.post("/app/api/{sid}/header/words")
+    def header_words_edit(sid: str, body: dict = Body(...)):
+        """{track, edits: [{i, text}]}: correct OCR words (typed text = full confidence), re-fit that track's
+        curves/scales, refresh the header table and keep the (crop, text) pairs under <project>/ocr_corrections/."""
+        e = get(sid)
+        if not e.header:
+            raise HTTPException(400, "no header OCR yet")
+        push_undo(e, "header words")
+        from pylogdigitizer import header_ocr
+        try:
+            header_ocr.apply_word_edits(e.header, str(body["track"]), list(body.get("edits") or []))
+        except (KeyError, IndexError) as ex:
+            e.undo.pop(); raise HTTPException(400, str(ex))
+        e.app["header_ocr"] = header_rows(e.header); e.app["header_rows"] = json.loads(json.dumps(e.app["header_ocr"]))
+        L = e.s.L
+        if L is not None and body.get("save", True):
+            try:
+                header_ocr.save_word_corrections(root / "ocr_corrections", L.ink, [w for w in e.header["tracks"][body["track"]]["words"]
+                                                 if w.get("corrected") and not w.get("saved")], scan=str(e.s.scan_path), offset=(L.x_offset, L.y_offset))
+                for w in e.header["tracks"][body["track"]]["words"]:
+                    if w.get("corrected"):
+                        w["saved"] = True
+            except Exception as ex:          # keeping crops is best effort; never blocks the edit
+                e.s.errors["ocr_corrections"] = f"{type(ex).__name__}: {ex}"
+        return header(sid)
+
     @app.post("/app/api/{sid}/header/revert")
     def header_revert(sid: str):
         e = get(sid); push_undo(e, "header revert")
@@ -331,6 +370,32 @@ def install(app, root: Path, runner) -> None:
             return dict(ok=True)
         return job(e, "Depth calibration", work)
 
+    # ---------------- calibration editing: track edges, manual scale, depth residuals
+    @app.get("/app/api/{sid}/calib")
+    def calib(sid: str):
+        e = get(sid)
+        def f(s):
+            return dict(section=s.section, width=s.width, scale=s.scale, edge_edits=getattr(s, "edge_edits", []),
+                        grid_x=s.grid_lines() if s.pan is not None else [], depth=s.depth_residuals())
+        return _clean(locked(e, f))
+
+    @app.post("/app/api/{sid}/calib/edges")
+    def calib_edges(sid: str, body: dict = Body(...)):
+        """{left_dx, right_dx}: move the track boundaries (sheet px), re-cut and re-trace."""
+        e = get(sid); push_undo(e, "track edges")
+        def work(j):
+            j.progress(0, 1, "re-cutting the track"); e.s.adjust_track_edges(float(body.get("left_dx", 0)), float(body.get("right_dx", 0)))
+            e.s.auto_trace(); return dict(ok=True)
+        return job(e, "Track edges", work)
+
+    @app.post("/app/api/{sid}/calib/scale2")
+    def calib_scale2(sid: str, body: dict = Body(...)):
+        """{x1, v1, x2, v2, type}: two panel columns (e.g. grid lines) with known values -> track scale."""
+        e = get(sid); push_undo(e, "scale")
+        l, r = locked(e, lambda s: s.scale_from_points(float(body["x1"]), float(body["v1"]), float(body["x2"]), float(body["v2"]),
+                                                       body.get("type", "linear")))
+        return _clean(dict(left=l, right=r))
+
     # ---------------- step 7: trace modes (job)
     @app.post("/app/api/{sid}/trace")
     def trace(sid: str, body: dict = Body(default={})):
@@ -400,6 +465,13 @@ def install(app, root: Path, runner) -> None:
         """{points: [[row, x], ..]}: guide stroke dragged along a hard stretch."""
         e = get(sid)
         return guided(e, "guide stroke", lambda s: s.add_stroke([(float(r), float(x)) for r, x in body["points"]]))
+
+    @app.post("/app/api/{sid}/fix/circle")
+    def fix_circle(sid: str, body: dict = Body(...)):
+        """{row, x, radius, through?}: re-trace only inside the cursor circle; nothing outside moves."""
+        e = get(sid)
+        return guided(e, "circle re-trace", lambda s: s.circle_retrace(float(body["row"]), float(body["x"]),
+                                                                      radius_px=float(body.get("radius", 60)), through=bool(body.get("through", False))))
 
     @app.post("/app/api/{sid}/fix/unstroke")
     def fix_unstroke(sid: str, body: dict = Body(...)):
@@ -478,6 +550,8 @@ def install(app, root: Path, runner) -> None:
                     d["header_rows"] = e.app.get("header_rows")
                     Path(p).write_text(json.dumps(_clean(d), indent=1)); return p
                 out.append(locked(e, lambda s: e.guard.write(name + "_session.json", wses)))
+            elif k == "training":      # correction sample for ML training (project folder, not in "all")
+                out.append(locked(e, lambda s: s.save_training(root / "training_data" / "corrections")))
             else:
                 raise HTTPException(404, f"unknown export {k}")
         return dict(e.guard.state(), written=[str(p) for p in out], all_written=e.guard.state()["written"])

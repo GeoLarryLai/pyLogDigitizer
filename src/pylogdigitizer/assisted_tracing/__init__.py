@@ -225,6 +225,56 @@ class AssistedSession:
         self.strokes = []; self.decisions = []; self.change_log = []; self._undo = []; self._spots = None
         self.history.append("section")
 
+    # ------------------------------------------------------------------ calibration editing (Stage 2)
+    def adjust_track_edges(self, left_dx: float = 0.0, right_dx: float = 0.0):
+        """Shift the followed left/right boundaries of the current track by whole-sheet offsets (px),
+        or widen/narrow a hand-drawn box; re-cuts the panel (clears the trace)."""
+        self._need_section()
+        sec = dict(self.section)
+        if sec["kind"] == "box":
+            return self.set_section(box=(sec["x0"] + left_dx, sec["x1"] + right_dx), rows=tuple(sec["rows"]))
+        n = sec["track"]
+        li, ri = self.L.edge_names.index(n + ".left"), self.L.edge_names.index(n + ".right")
+        E = np.array(self.L.edges, float); E[:, li] += float(left_dx); E[:, ri] += float(right_dx)
+        if np.any(E[:, ri] - E[:, li] < 20):
+            raise SessionError("track narrower than 20 px after the edit")
+        self.L.edges = E
+        self.edge_edits = getattr(self, "edge_edits", []) + [(n, float(left_dx), float(right_dx))]
+        return self.set_section(track=n, rows=tuple(sec["rows"]))
+
+    def grid_lines(self, min_frac: float = 0.5) -> list[float]:
+        """Vertical grid-line centres in panel columns (for snapping scale clicks)."""
+        from pylogdigitizer import track_grid_detection as tgd
+        self._need_section()
+        return [float(l["center"]) for l in tgd.vertical_lines(self.pan[: min(len(self.pan), 20000)], min_frac)]
+
+    def scale_from_points(self, x1: float, v1: float, x2: float, v2: float, scale_type: str = "linear", **kw):
+        """Manual scale: two panel columns with known values (e.g. two grid lines) -> values at the
+        track edges (x = -0.5 and width - 0.5), linear or log10; then ``set_scale``."""
+        if x1 == x2:
+            raise SessionError("the two scale points need different x")
+        f = (np.log10 if scale_type == "log" else (lambda v: v))
+        if scale_type == "log" and (v1 <= 0 or v2 <= 0):
+            raise SessionError("log scale needs positive values")
+        a = (f(v2) - f(v1)) / (x2 - x1)
+        g = lambda x: f(v1) + a * (x - x1)
+        inv = (lambda y: float(10 ** y)) if scale_type == "log" else float
+        left, right = inv(g(-0.5)), inv(g(self.width - 0.5))
+        self.set_scale(round(left, 6), round(right, 6), scale_type, **kw)
+        return left, right
+
+    def depth_residuals(self) -> list[dict]:
+        """Leave-one-out check of manual depth anchors: predicted depth of each anchor from the others."""
+        from pylogdigitizer import depth_calibration as dcal
+        a = list(self.depth_anchors); out = []
+        for i, (r, d) in enumerate(a):
+            rest = a[:i] + a[i + 1:]
+            if len(rest) < 2:
+                out.append(dict(row=r, depth=d, loo_ft=None)); continue
+            pred = float(dcal.fit_depth_map(rest)(r))
+            out.append(dict(row=r, depth=d, loo_ft=round(pred - d, 3)))
+        return out
+
     def _edges(self, rows):
         rows = np.asarray(rows, float)
         if self.section["kind"] == "box":
@@ -401,6 +451,8 @@ class AssistedSession:
             return self.auto_trace(anchors_panel=self.anchors or None, excluded=self.excluded or None)
         cost_conv = self.T["cost_conv"]
         fy, fx = self.T["fy"], self.T["fx"]
+        if self._prob_map is None:
+            cost_mode = ct.ml_fallback(cost_mode, self.trace_kw.get("ml_model"))
         if cost_mode == "conventional":
             cost_base = cost_conv.copy()
         else:
@@ -545,13 +597,13 @@ class AssistedSession:
     # ------------------------------------------------------------------ guided fixing
     # Every user edit (pin, move, stroke, answer) goes through _edit: an undo snapshot is kept and the
     # change it made to the trace is logged (progress() turns that into "more clicks still help?").
-    GUIDED_ACTIONS = ("pin", "unpin", "move", "stroke", "unstroke", "answer")
+    GUIDED_ACTIONS = ("pin", "unpin", "move", "stroke", "unstroke", "answer", "circle")
 
     def _state(self) -> dict:
         return dict(anchors=list(self.anchors), anchor_window_ft=dict(self.anchor_window_ft), excluded=list(self.excluded),
                     excluded_ids=list(self.excluded_ids), strokes=[list(s) for s in self.strokes],
                     decisions=[dict(d) for d in self.decisions], backup_intervals=list(self.backup_intervals),
-                    path=self.T["path_padded"].copy(), n_log=len(self.change_log))
+                    path=self.T["path_padded"].copy(), n_log=len(self.change_log), circles=list(getattr(self, "circles", [])))
 
     def _edit(self, label: str, fn):
         if self.T is None:
@@ -569,6 +621,7 @@ class AssistedSession:
     def _restore(self, snap: dict):
         for k in ("anchors", "anchor_window_ft", "excluded", "excluded_ids", "strokes", "decisions", "backup_intervals"):
             setattr(self, k, snap[k])
+        self.circles = list(snap.get("circles", []))
         del self.change_log[snap["n_log"]:]
         self._rebuild_cost(); self._set_path(snap["path"]); self._spots = None
 
@@ -616,6 +669,37 @@ class AssistedSession:
         """Guided "Fix the trace" click: the trace must pass through (row, x) (hard constraint);
         only the stretch to the neighbouring pins is re-traced. Undoable (``undo``)."""
         return self._edit("pin", lambda: self.add_anchor(row, x, snap=snap, window_ft=window_ft, panel_x=panel_x))
+
+    def circle_retrace(self, row: float, x: float, radius_px: float = 60.0, through: bool = False, panel_x: bool = False):
+        """Cursor-circle fix: re-trace only the rows inside a circle (centre (row, x), sheet px), with the
+        search limited to the circle's columns; the path enters and leaves at the current trace, so
+        nothing outside the circle moves. ``through=True`` also pins the centre. Undoable."""
+        def f():
+            T = self.T; fy, fx = T["fy"], T["fx"]
+            xp = float(x) if panel_x else float(self.sheet_to_panel(row, x))
+            c = self._dp(row); rr = max(2, int(round(radius_px / fy)))
+            a, b = max(0, c - rr), min(len(T["path_padded"]) - 1, c + rr)
+            if b - a < 2:
+                raise SessionError("circle too small")
+            cx, rc = self._dpx(xp), radius_px / fx
+            cost = T["cost"][a:b + 1].copy(); cols = np.arange(cost.shape[1], dtype=float)
+            for k in range(cost.shape[0]):
+                dy = (a + k - c) * fy
+                half = np.sqrt(max(radius_px ** 2 - dy ** 2, 0.0)) / fx
+                cost[k, np.abs(cols - cx) > max(half, 1.0)] += 50.0       # outside the circle: effectively forbidden
+            P = T["path_padded"].copy()
+            cons = [(0, float(P[a])), (b - a, float(P[b]))] if 0 < a or b < len(P) - 1 else []
+            cons = [cc for cc in cons if not (cc[0] == 0 and a == 0) and not (cc[0] == b - a and b == len(P) - 1)]
+            if through:
+                cons.append((c - a, cx))
+            p = T["params"]
+            sub = ct.trace(cost, max_step=p["max_step"], smooth=p["smooth"], seg_weight=p["seg_weight"], anchors=cons,
+                           anchor_tol=1, labels=T["labels"][a:b + 1], switch_cost=p["switch_cost"], use=p["use"])
+            P[a:b + 1] = sub; self._set_path(P); self._update_values()
+            self.circles = getattr(self, "circles", []) + [(float(row), float(xp), float(radius_px), bool(through))]
+            self.last_retrace = dict(dp_rows=(int(a), int(b)), sheet_rows=(float(T["rows"][a]), float(T["rows"][b])))
+            return self.last_retrace
+        return self._edit("circle", f)
 
     def unpin(self, index: int):
         if not 0 <= index < len(self.anchors):
@@ -828,7 +912,8 @@ class AssistedSession:
                     section=self.section, calibration=self.calibration(), anchors=[list(a) for a in self.anchors],
                     excluded=[list(a) for a in self.excluded], backup_intervals=[list(a) for a in self.backup_intervals],
                     strokes=[[list(p) for p in st] for st in self.strokes], decisions=self.decisions,
-                    trace_kw=self.trace_kw)
+                    trace_kw=self.trace_kw, edge_edits=[list(e) for e in getattr(self, "edge_edits", [])],
+                    circles=[list(c) for c in getattr(self, "circles", [])])
 
     def save_session(self, path) -> Path:
         """Save everything needed to replay this digitization (no image data)."""
@@ -866,9 +951,15 @@ class AssistedSession:
         if sec["kind"] == "box":
             s.set_section(box=(sec["x0"], sec["x1"]), rows=sec["rows"])
         else:
+            for n, dl, dr in d.get("edge_edits") or []:      # hand-moved track boundaries
+                li, ri = s.L.edge_names.index(n + ".left"), s.L.edge_names.index(n + ".right")
+                E = np.array(s.L.edges, float); E[:, li] += dl; E[:, ri] += dr; s.L.edges = E
+            s.edge_edits = [tuple(e) for e in d.get("edge_edits") or []]
             s.set_section(track=sec["track"], rows=sec["rows"])
         s.backup_intervals = [tuple(x) for x in d.get("backup_intervals", [])]
         s.auto_trace(anchors_panel=d.get("anchors") or None, excluded=d.get("excluded") or None, strokes=d.get("strokes") or None)
+        for r, x, rad, thr in d.get("circles") or []:            # cursor-circle re-traces, in order
+            s.circle_retrace(r, x, radius_px=rad, through=thr, panel_x=True)
         s.decisions = [dict(x) for x in d.get("decisions", [])]
         return s
 

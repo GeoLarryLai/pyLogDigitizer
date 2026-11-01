@@ -10,7 +10,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("info", help="scan or LAS info"); s.add_argument("path")
     s = sub.add_parser("preview", help="downsampled PNG of a scan"); s.add_argument("path"); s.add_argument("out"); s.add_argument("--factor", type=int, default=8)
     for nm in ("editor", "serve"):   # 'serve' kept as an alias
-        s = sub.add_parser(nm, help="launch the local web editor on http://127.0.0.1:PORT")
+        s = sub.add_parser(nm, help="launch the app (same as pylogdigitizer-app)")
         s.add_argument("project", nargs="?", default=".", help="project folder (with example_data/, dataset_profiles/)")
         s.add_argument("--port", type=int, default=8765); s.add_argument("--open", action="store_true", help="open a browser tab")
     sub.add_parser("backend", help="report tracer backend")

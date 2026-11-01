@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""web_editor: local web UI (FastAPI backend + OpenSeadragon viewer, vendored, works offline).
+"""web_editor: core HTTP API + vendored OpenSeadragon viewer used by the app (``pylogdigitizer-app``).
 
-    pylogdigitizer editor [PROJECT_DIR] [--port 8765]     ->  http://127.0.0.1:8765
+    pylogdigitizer-app [PROJECT_DIR]     (``pylogdigitizer editor`` is an alias)
 
 Binds to 127.0.0.1 only; no data leaves the machine. All digitization logic is in
 ``pylogdigitizer.assisted_tracing`` - this module only exposes it over HTTP.
@@ -20,10 +20,5 @@ def create_app(project_dir: str = "."):
 
 def serve(project_dir: str = ".", port: int = 8765, open_browser: bool = False) -> None:
     """Run the editor on http://127.0.0.1:<port> (local only)."""
-    import uvicorn
-    app = create_app(project_dir)
-    if open_browser:
-        import threading, webbrowser
-        threading.Timer(1.5, lambda: webbrowser.open(f"http://{HOST}:{port}")).start()
-    print(f"pyLogDigitizer editor: http://{HOST}:{port}  (local only, Ctrl+C to stop)")
-    uvicorn.run(app, host=HOST, port=port, log_level="warning")
+    from pylogdigitizer.app import main
+    main([str(project_dir), "--port", str(port)] + ([] if open_browser else ["--no-browser"]))

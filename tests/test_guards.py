@@ -77,3 +77,18 @@ def test_layout_error_on_blank_sheet(tmp_path):
     p = tmp_path / "blank.tif"; cv2.imwrite(str(p), np.full((4000, 1500), 255, np.uint8))
     with pytest.raises((wf.LayoutError, wf.CalibrationError)):
         wf.digitize_curve(str(p), "track1", (0, 150))
+
+
+def test_ml_cost_falls_back_without_torch(monkeypatch):
+    import numpy as np, warnings
+    from pylogdigitizer import curve_tracing as ct
+    monkeypatch.setattr(ct, "ml_available", lambda: False)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert ct.ml_fallback("blend") == "conventional"
+    assert any("torch" in str(x.message) for x in w)
+    panel = np.full((600, 200), 255, np.uint8); panel[:, 95:100] = 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        t = ct.trace_track(panel, cost_mode="ml")
+    assert t["cost_mode"] == "conventional" and t["ml_prob"] is None

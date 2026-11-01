@@ -126,3 +126,21 @@ def test_session_and_training_keep_picks(project, tmp_path):
     out = s.save_training(tmp_path / "corr")
     meta = json.loads((out / "metadata.json").read_text())
     assert meta["picks"] == [list(a) for a in s.anchors] and meta["n_strokes"] == 1 and meta["decisions"][0]["choice"] == "skip"
+
+
+def test_cursor_circle_only_changes_rows_inside(project):
+    s = _session(project); x0 = s.T["x"].copy(); rows = np.asarray(s.T["rows"], float)
+    r = _wrong_row(s); rad = 80.0
+    out = s.circle_retrace(r, float(xa(r)), radius_px=rad, through=True)
+    lo, hi = out["sheet_rows"]
+    outside = (rows < lo) | (rows > hi)
+    assert np.array_equal(s.T["x"][outside], x0[outside])                   # nothing outside the circle moved
+    inside = (rows >= r - rad / 3) & (rows <= r + rad / 3)
+    assert np.median(np.abs(s.T["x"][inside] - xa(rows[inside]))) < 10      # pulled onto the wanted curve
+    assert s.circles and s.undo() == "circle" and np.array_equal(s.T["x"], x0) and s.circles == []
+    s.circle_retrace(r, float(xa(r)), radius_px=rad, through=True); x1 = s.T["x"].copy()
+    from pylogdigitizer.assisted_tracing import AssistedSession
+    import json, tempfile, os
+    f = os.path.join(tempfile.mkdtemp(), "s.json"); open(f, "w").write(json.dumps(s.session_dict(), default=str))
+    s2 = AssistedSession.from_session_file(f)
+    assert np.allclose(s2.T["x"], x1, equal_nan=True)                       # replayed from the session file

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pylogdigitizer"
-version = "0.1.1"
+version = "0.1.2"
 description = "Semi-automatic and ML-assisted digitization of raster scans of petrophysical well logs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = ["numpy", "pillow", "tifffile", "lasio", "pandas", "pyyaml", "opencv-python", "scikit-image", "scipy",
                 "rapidocr_onnxruntime",   # default OCR engine (header + depth labels); pip wheels only, models bundled
-                "numba", "fastapi", "uvicorn", "httpx", "matplotlib", "torch"]
+                "numba", "fastapi", "uvicorn", "httpx", "matplotlib"]   # torch optional: ML cost map only
 
 [project.urls]
 Homepage = "https://github.com/GeoLarryLai/pyLogDigitizer"

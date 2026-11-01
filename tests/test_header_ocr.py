@@ -3,6 +3,7 @@
 """header_ocr: fuzzy mnemonic lookup, unit/number parsing, scale fitting, proposal assembly from
 synthetic OCR words, and one integration test on a real example header (needs RapidOCR)."""
 from pathlib import Path
+import numpy as np
 import pytest
 
 from pylogdigitizer import header_ocr as ho
@@ -157,3 +158,21 @@ def test_scale_sanity_flags():
     assert scale_sanity("GR", -1, 7, "linear")              # below the gamma range
     assert scale_sanity("GR", 50, 50, "linear")
     assert scale_sanity("ILD", 0.2, 2000, "log") == []      # log scales: span rule not applied
+
+
+def test_word_edits_refit_scale_and_save(tmp_path):
+    # OCR read "GAMMA RAY" fine but "200" as "100": editing the word re-fits the scale
+    words = [_w("GAMMA", 300, 100), _w("RAY", 400, 100), _w("0", 102, 200), _w("100", 850, 200, conf=40)]
+    h = dict(tracks={"track1": dict(x=(100, 900), grid="linear", words=words, curves=ho.propose_curves(words, 100, 900, "linear", track="track1"))})
+    before = h["tracks"]["track1"]["curves"]
+    assert not before or before[0]["scale_right"]["value"] != 200
+    ho.apply_word_edits(h, "track1", [dict(i=3, text="200")])
+    (p,) = h["curves"]
+    assert p["mnemonic"]["value"] == "GR" and (p["scale_left"]["value"], p["scale_right"]["value"]) == (0, 200)
+    w = h["tracks"]["track1"]["words"][3]
+    assert w["conf"] == 100 and w["corrected"] and w["ocr_text"] == "100"
+    img = np.full((400, 1000), 255, np.uint8)
+    names = ho.save_word_corrections(tmp_path, img, h["tracks"]["track1"]["words"], scan="x/s.tif")
+    assert names == ["s_0000.png"] and (tmp_path / "labels.tsv").read_text().split("\t")[1] == "200"
+    with pytest.raises(IndexError):
+        ho.apply_word_edits(h, "track1", [dict(i=9, text="x")])

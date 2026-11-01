@@ -37,7 +37,9 @@ function openViewer() {
   if (viewer) viewer.destroy(); $("empty").hidden = true;
   viewer = OpenSeadragon({id: "viewer", tileSources: E("/image.dzi"), showNavigationControl: false, prefixUrl: "",
     gestureSettingsMouse: {clickToZoom: false, dblClickToZoom: true}, maxZoomPixelRatio: 4, minZoomImageRatio: 0.3, visibilityRatio: 0.2});
-  viewer.addHandler("canvas-click", onClick); viewer.addHandler("canvas-press", onPress); viewer.addHandler("canvas-drag", onDrag); viewer.addHandler("canvas-release", onRelease); for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
+  viewer.addHandler("canvas-click", onClick); viewer.addHandler("canvas-press", onPress); viewer.addHandler("canvas-drag", onDrag); viewer.addHandler("canvas-release", onRelease);
+  new OpenSeadragon.MouseTracker({element: viewer.canvas, moveHandler: e => { if (mode !== "circle") return; const ip = viewer.viewport.viewerElementToImageCoordinates(e.position); HOVER = {row: ip.y, x: ip.x}; drawSoon(); },
+    scrollHandler: e => { if (mode !== "circle" || !e.originalEvent.shiftKey) return; const el = $("circR"); if (!el) return; el.value = Math.max(10, Math.min(600, +el.value * (e.scroll > 0 ? 1.15 : 1 / 1.15))) | 0; e.preventDefault = true; drawSoon(); }}); for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
   return new Promise(r => viewer.addOnceHandler("open", () => { focusStep(); r(); }));
 }
 function fitRows(r0, r1, x0 = 0, x1 = ST.width) {
@@ -54,6 +56,16 @@ function focusStep() {
 }
 let _drawReq = 0;
 function drawSoon() { if (!_drawReq) _drawReq = requestAnimationFrame(() => { _drawReq = 0; draw(); }); }
+let HOVER = null, HW = [];
+function drawWords(c, P) {
+  if (STEP !== "header") return; c.lineWidth = 1.5;
+  HW.forEach(w => { const a = P(w.x0, w.y0), b = P(w.x1, w.y1);
+    c.strokeStyle = w.corrected ? "#16a34a" : (w.conf < 60 ? "#d97706" : "rgba(37,99,235,.7)"); c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); });
+}
+function drawCircle(c, P) {
+  if (mode !== "circle" || !HOVER) return; const r = +($("circR")?.value || 60), a = P(HOVER.x, HOVER.row), b = P(HOVER.x + r, HOVER.row);
+  c.strokeStyle = "rgba(217,119,6,.9)"; c.lineWidth = 2; c.setLineDash([5, 4]); c.beginPath(); c.arc(a.x, a.y, Math.abs(b.x - a.x), 0, 2 * Math.PI); c.stroke(); c.setLineDash([]);
+}
 function draw() {
   const cv = $("ov"), c = cv.getContext("2d"); cv.width = cv.clientWidth; cv.height = cv.clientHeight; c.clearRect(0, 0, cv.width, cv.height);
   if (!viewer || !viewer.world.getItemAt(0) || !ST) return;
@@ -65,6 +77,7 @@ function draw() {
     Object.values(LAY.edges).forEach((pl, j) => { c.strokeStyle = TAB10[j % 10]; c.lineWidth = 1.5; c.beginPath();
       pl.forEach(([r, x], i) => { const p = P(x, r); i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y); }); c.stroke(); });
   }
+  drawWords(c, P);
   if (["section", "depth"].includes(STEP)) {                                    // depth labels: red ticks
     c.font = "12px -apple-system,sans-serif";
     LBL.forEach((l, i) => { if (!vis(l.row)) return; const a = P(ST.width * 0.4, l.row), b = P(ST.width * 0.6, l.row);
@@ -78,6 +91,7 @@ function draw() {
       c.font = "bold 16px -apple-system,sans-serif"; c.fillStyle = c.strokeStyle; c.fillText(`Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft`, a.x + 8, Math.max(a.y, 0) + 20); });
     return;
   }
+  drawCircle(c, P);
   const sec = OV?.section;
   if (sec) { c.strokeStyle = "rgba(37,99,235,.8)"; c.lineWidth = 1.5; c.setLineDash([6, 4]); const a = P(0, sec.rows[0]), b = P(0, sec.rows[1]);
     c.beginPath(); c.moveTo(0, a.y); c.lineTo(cv.width, a.y); c.moveTo(0, b.y); c.lineTo(cv.width, b.y); c.stroke();
@@ -112,6 +126,11 @@ async function onClick(ev) {
   if (!ev.quick || mode === "pan") return; ev.preventDefaultAction = true;
   const ip = viewer.viewport.viewerElementToImageCoordinates(ev.position), row = ip.y, x = ip.x;
   try {
+    if (mode === "word") { const w = HW.find(w => row >= w.y0 - 3 && row <= w.y1 + 3 && x >= w.x0 - 3 && x <= w.x1 + 3); if (!w) return;
+      const t = prompt(`OCR read "${w.ocr_text || w.text}" (confidence ${Math.round(w.conf)}). Correct text (empty = delete):`, w.text); if (t === null || t === w.text) return;
+      HDR = Object.assign(HDR, await api("POST", A("/header/words"), {track: w.track, edits: [{i: w.i, text: t}]}));
+      HW = (await api("GET", A("/header/words"))).words; renderHeaderTable(); draw(); return; }
+    if (mode === "circle") { await fixCall("/fix/circle", {row, x, radius: +($("circR")?.value || 60), through: ev.originalEvent?.shiftKey || false}); return; }
     if (mode === "fix") { if (Date.now() - (DRAG?.t || 0) < 300) return; await fixCall("/fix/pin", {row, x}); return; }
     if (mode === "anchor") { await api("POST", E("/anchors"), {row, x, snap: true, window_ft: +($("winFt")?.value || 150)}); }
     else if (mode === "exclude") { await api("POST", E("/exclude"), {row, x}); }
@@ -250,9 +269,11 @@ R.section = () => {
     <h3>Depth range (ft)</h3><div class="row"><label>top</label><input type="number" id="dTop" value="${dtb[0] != null ? dtb[0].toFixed(0) : ""}"></div>
     <div class="row"><label>base</label><input type="number" id="dBase" value="${dtb[1] != null ? dtb[1].toFixed(0) : ""}"></div>
     <div class="row"><button id="secReset">Reset to detected</button></div>
+    <h3>Move the track edges (px)</h3><div class="row"><label>left</label><input type="number" id="eL" value="0" step="1"><label style="min-width:0">right</label><input type="number" id="eR" value="0" step="1"><button id="eApply">Move</button></div>
     <div class="card">Current: <b>${ST.section ? (ST.section.kind === "box" ? `box x ${ST.section.x0}–${ST.section.x1}` : ST.section.track) : "none"}</b>, rows ${ST.section ? ST.section.rows.join("–") : "–"}</div>
     ${KEYS("<b>Draw box</b> (B): click two corners", "Changing the section re-traces it (the trace step opens ready)", NAV)}`;
   document.querySelectorAll("input[name=trk],#dTop,#dBase").forEach(i => i.oninput = () => dirty(true));
+  on("eApply", async () => { await runJob(A("/calib/edges"), {left_dx: +$("eL").value || 0, right_dx: +$("eR").value || 0}, "track edges"); await refresh(); render(false); });
   on("secReset", async () => { const t = INFO.catalog.find(c => ST.scan.endsWith(c.scan))?.settings?.track || "track1"; await runJob(A("/section"), {track: t}, "section"); await refresh(); render(); });
   main("Use this section", async () => {
     const t = document.querySelector("input[name=trk]:checked")?.value, d0 = $("dTop").value, d1 = $("dBase").value;
@@ -287,12 +308,13 @@ R.header = async () => {
   const f = INFO.features.ocr;
   $("stepLead").textContent = "These are the curve names and scale numbers read from the top of the log. Fix anything that looks wrong; orange = please check.";
   $("stepBody").innerHTML = `<div id="hdrInfo" class="note"></div>${hint(f)}<div><table class="t fit" id="hdrTbl"></table></div>
-    <div class="row"><button id="hAdd">+ Add row</button><button id="hDel" class="danger">Delete selected</button><button id="hRevert">Revert to OCR</button><button id="hRerun" ${off(f)}>Re-run OCR</button></div>${engineSel()}
+    <div class="row"><button id="hAdd">+ Add row</button><button id="hDel" class="danger">Delete selected</button><button id="hRevert">Revert to OCR</button><button id="hRerun" ${off(f)}>Re-run OCR</button></div>
+    <div class="row">${tool("word", "e", "Edit OCR words")}<span class="muted">click a boxed word on the image to correct it; the scale is re-fitted</span></div>${engineSel()}
     ${KEYS("Click a cell's margin to select a row · <kbd>Delete</kbd> removes selected rows", "Type over any value · ✎ = edited, + = added, orange border = OCR flagged for review", "Hover a row to see what OCR read · ◉ = row used in step 6 (Scale)", "Nothing is applied until you press the blue button; <kbd>Z</kbd> undoes")}`;
   await loadHeader();
   $("hdrInfo").innerHTML = !f.ok ? "OCR is not installed: add the curve's scale by hand (+ Add row) or skip to step 6." : HDR.error ? `<span class="err">${esc(HDR.error)}</span>` : `${HDR.rows.length} curve(s) found` + (HDR.rows.filter(r => r.review?.length).length ? ` · <span class="warnc">${HDR.rows.filter(r => r.review?.length).length} need a look (orange)</span>` : "");
   if (!HDR.choice) { const m = HDR.rows.find(r => r.mnemonic === ST.curve && r.track === ST.section?.track) || HDR.rows.find(r => r.track === ST.section?.track); if (m) HDR.choice = m.id; }
-  renderHeaderTable();
+  renderHeaderTable(); try { HW = (await api("GET", A("/header/words"))).words; } catch (e) { HW = []; } draw();
   on("hAdd", () => { HDR.rows.push({id: Math.random().toString(36).slice(2, 8), origin: "added", track: ST.section?.track || "track1", mnemonic: ST.curve, unit: "", left: "", right: "", type: "linear", backup_left: "", backup_right: "", review: []}); dirty(true); renderHeaderTable(); });
   on("hDel", delHeader);
   on("hRevert", async () => { HDR = Object.assign(HDR, await api("POST", A("/header/revert"))); HSEL.clear(); renderHeaderTable(); dirty(false); await refresh(false); });
@@ -378,11 +400,16 @@ R.scale = () => {
     <div class="row"><label>wraps on</label><select id="wS"><option ${s.wrap_side === "right" ? "selected" : ""}>right</option><option ${s.wrap_side === "left" ? "selected" : ""}>left</option></select>
       <label style="min-width:0"><input type="checkbox" id="hat" ${s.use_hatch ? "checked" : ""}> hatched backup</label></div>
     <div class="row"><button id="sReset">Reset to preset</button></div>
+    <h3>From two grid lines</h3><div class="note">Panel x (px from the left track edge) and the value there. Grid lines at x: <span id="gX">…</span></div>
+    <div class="row"><input type="number" id="p1x" placeholder="x1"><input type="number" id="p1v" placeholder="value 1"><input type="number" id="p2x" placeholder="x2"><input type="number" id="p2v" placeholder="value 2"><button id="p2Apply">Fit</button></div>
     <div class="card">Applied: ${s.left} → ${s.right} ${s.type}${s.backup ? `, backup ${s.backup[0]} → ${s.backup[1]} (${s.wrap_side})` : ""} · wraps found: ${ST.n_wraps ?? "–"}</div>
     ${KEYS("Applying only re-maps values (no re-trace)", "<b>wraps on</b>: the edge the curve leaves through (GR: right; DT 100→40: left)", "<kbd>Z</kbd> undoes")}`;
   if (v) dirty(true);
   document.querySelectorAll("#stepBody input,#stepBody select").forEach(i => i.oninput = () => dirty(true));
   const apply = async b => { await api("POST", E("/scale"), b); await refresh(); };
+  api("GET", A("/calib")).then(c => { const g = $("gX"); if (g) g.textContent = (c.grid_x || []).map(x => x.toFixed(0)).join(", ") || "none found"; }).catch(() => {});
+  on("p2Apply", async () => { const r = await api("POST", A("/calib/scale2"), {x1: +$("p1x").value, v1: +$("p1v").value, x2: +$("p2x").value, v2: +$("p2v").value, type: $("sT").value});
+    toast(`scale ${fmt(r.left, 3)} → ${fmt(r.right, 3)}`); await refresh(); render(false); });
   on("sReset", async () => { const i = ST.initial_scale; await apply({left: i.left, right: i.right, type: i.type, backup: i.backup, wrap_side: i.wrap_side, use_hatch: i.use_hatch}); render(); });
   main("Apply scale — continue", async () => {
     const bk = $("bL").value !== "" && $("bR").value !== "" ? [+$("bL").value, +$("bR").value] : null;
@@ -417,7 +444,8 @@ R.trace = () => {
   $("stepLead").textContent = "Click on the real curve wherever the red line is wrong - the line is redrawn through your click.";
   $("stepBody").innerHTML = `<div class="card" id="trInfo"></div>
     <h3>How much did that click change?</h3><div class="card" id="prog7"><span class="note">Each click is a pin: the line must pass through it. Fix the worst places first; when clicks stop changing much, you are done.</span></div>
-    <div class="tools">${tool("fix", "f", "Fix: click the curve")}${tool("guide", "g", "Guide: drag along it")}</div>
+    <div class="tools">${tool("fix", "f", "Fix: click the curve")}${tool("guide", "g", "Guide: drag along it")}${tool("circle", "c", "Circle: re-trace inside")}</div>
+    <div class="row"><label class="muted">Circle radius (px) <input id="circR" type="number" value="60" min="10" max="600" step="10" style="width:5em"></label> <span class="muted">scroll with Shift to resize</span></div>
     <div class="note" id="toolHint">Fix: click where the line is wrong · drag a green pin to move it · ✕ in the list removes it.<br>Guide (optional): drag a short stroke along a hard stretch; the line follows it there.</div>
     <div class="row"><button id="tNextU" title="Jump to the next place where another path is almost as good (yellow)">Next place to look <span class="kbd">N</span></button><span class="note" id="uPos"></span></div>
     <h3>Pins and guides</h3><div class="list" id="ancList"></div>
@@ -494,7 +522,7 @@ R.export = () => {
   $("stepBody").innerHTML = `<h3>Export folder</h3><div class="row"><input id="xDir" value="${esc(x.folder)}" style="flex:1"><button id="xSet">Set</button></div>
     <div class="note">Files: <code>${esc(ST.name)}.las</code>, <code>.csv</code> (0.5 ft, same values as the LAS), <code>_qc.png</code>, <code>_session.json</code> (replayable).</div>
     <h3>Single files</h3><div class="row"><button data-x="las">LAS</button><button data-x="csv">CSV</button>
-      <button data-x="qc_png" ${!f.plot.ok ? off(f.plot) : (!hasLas ? 'disabled title="no paired LAS"' : "")}>QC plot PNG</button><button data-x="session">Session JSON</button></div>${hint(f.plot)}
+      <button data-x="qc_png" ${!f.plot.ok ? off(f.plot) : (!hasLas ? 'disabled title="no paired LAS"' : "")}>QC plot PNG</button><button data-x="session">Session JSON</button><button data-x="training" title="save image + corrected trace to training_data/corrections (for ML training)">Training sample</button></div>${hint(f.plot)}
     <div class="row"><button id="xOpen" ${x.exists ? "" : 'disabled title="created by the first export"'}>Open export folder</button></div>
     <h3>Written this session</h3><div class="list" id="xList">${x.written.length ? x.written.map(p => `<div>${esc(p.split(/[\\/]/).pop())}</div>`).join("") : '<span class="note">nothing yet</span>'}</div>
     ${KEYS("The blue button writes all available files; the single-file buttons write one each", "Re-exporting overwrites files of the same name in this folder")}`;

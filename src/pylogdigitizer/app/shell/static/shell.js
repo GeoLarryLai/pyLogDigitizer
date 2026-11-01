@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Larry Syu-Heng Lai
-// shell.js - step rail, progress, jobs, toasts, api(). Project independent (no well-log code).
+// shell.js - step rail, progress, jobs, toasts, api(). Project independent (shared with pyPetrograph and pyRockImageLab).
 "use strict";
 const Shell = (() => {
   const $ = id => document.getElementById(id);
@@ -16,7 +16,7 @@ const Shell = (() => {
     return j;
   }
   function progress(n, N, msg) {
-    const on = N != null; $("prog").classList.toggle("on", on);
+    const on = N != null; $("prog").classList.toggle("on", on); $("prog").classList.remove("err"); $("progtxt").classList.remove("err");
     if (!on) { $("progtxt").textContent = ""; return; }
     const pct = Math.round(100 * Math.min(n, N) / Math.max(1, N));
     $("prog").firstElementChild.style.width = pct + "%";
@@ -26,14 +26,17 @@ const Shell = (() => {
   async function runJob(url, body, label) {
     busy(true);
     try {
-      let j = (await api("POST", url, body)).job;
+      let j = (await api("POST", url, body)).job, wait = 40;
       while (j.state === "running") {
-        progress(j.n, j.N, j.message || label); await new Promise(r => setTimeout(r, 250));
+        progress(j.n, j.N, j.message || label); await new Promise(r => setTimeout(r, wait)); wait = Math.min(250, wait * 2);
         j = await api("GET", "/shell/api/jobs/" + j.id);
       }
-      progress(j.N, j.N, (label || j.title) + (j.state === "done" ? ` · done in ${j.seconds} s` : ""));
+      if (j.state === "error") {        // stays on screen until the next job: the step is not waiting any more
+        const msg = String(j.error || "").replace(/^(UserError|ValueError|RuntimeError): /, "");
+        progress(j.n, j.N, "✗ Stopped: " + msg); $("prog").classList.add("err"); $("progtxt").classList.add("err"); toast(msg, true); throw new Error(msg);
+      }
+      progress(j.N, j.N, (label || j.title) + ` · done in ${j.seconds} s`);
       setTimeout(() => progress(), 2500);
-      if (j.state === "error") { toast(j.error, true); throw new Error(j.error); }
       return j.result;
     } finally { busy(false); }
   }
@@ -43,9 +46,7 @@ const Shell = (() => {
     $("rail").querySelectorAll("li").forEach(li => li.onclick = () => { const i = +li.dataset.i; if (i < unlocked) go(i); });
   }
   function go(i) { cur = i; renderRail(); onStep(i, steps[i]); }
-  function complete(i, next = true) {
-    let j = i + 1; while (j < steps.length && steps[j].hidden) { done.add(j); j++; }       // skip hidden steps
-    done.add(i); unlocked = Math.max(unlocked, j + 1); if (next && j < steps.length) go(j); else renderRail(); }
+  function complete(i, next = true) { done.add(i); unlocked = Math.max(unlocked, i + 2); if (next && i + 1 < steps.length) go(i + 1); else renderRail(); }
   function reset(fromStep) { [...done].forEach(i => { if (i >= fromStep) done.delete(i); }); unlocked = Math.min(unlocked, fromStep + 1); renderRail(); }
   function help(html) { $("help").innerHTML = html; }
   function init(o) { steps = o.steps; onStep = o.onStep; renderRail();

@@ -15,7 +15,7 @@ dependencies:
   - uvicorn
   - httpx
   - matplotlib
-  - pytorch
+  - pytorch                  # optional: ML cost map only
   - jupyterlab
   - pytest
   - maturin

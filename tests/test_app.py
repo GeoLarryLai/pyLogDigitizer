@@ -204,3 +204,42 @@ def test_guided_fix_routes(app_sid):
     assert c.post(f"/app/api/{sid}/fix/unpin", json={"index": k}).json()["n_anchors"] == n
     c.post(f"/app/api/{sid}/undo"); c.post(f"/app/api/{sid}/undo")
     assert c.post(f"/app/api/{sid}/undo").json()["n_anchors"] == n
+
+
+def test_calibration_editing(app_sid):
+    c, sid, root = app_sid
+    A = f"/app/api/{sid}"
+    j = wait(c, c.post(A + "/depth", json=dict(mode="labels", labels=[[0, 1000], [1500, 1150], [3000, 1300]])))
+    assert j["state"] == "done", j
+    assert wait(c, c.post(A + "/section", json=dict(box=[0, W], rows=[0, H])))["state"] == "done"
+    cal = c.get(A + "/calib").json()
+    assert cal["width"] == W and [d["loo_ft"] for d in cal["depth"]][1] == 0.0      # collinear anchors: zero residual
+    r = c.post(A + "/calib/scale2", json=dict(x1=-0.5, v1=0, x2=W / 2 - 0.5, v2=75)).json()
+    assert abs(r["left"]) < 1e-6 and abs(r["right"] - 150) < 1e-6
+    r = c.post(A + "/calib/scale2", json=dict(x1=0, v1=1, x2=100, v2=10, type="log")).json()
+    assert r["right"] > r["left"] > 0
+    j = wait(c, c.post(A + "/calib/edges", json=dict(left_dx=10, right_dx=-10)))
+    assert j["state"] == "done", j
+    assert c.get(A + "/calib").json()["width"] == W - 20
+    bad = c.post(A + "/calib/scale2", json=dict(x1=5, v1=1, x2=5, v2=2))
+    assert bad.status_code == 400
+
+
+def test_header_word_correction(app_sid):
+    from pylogdigitizer import header_ocr as ho
+    c, sid, _root = app_sid
+    e = c.app.state.editor.state.sessions[sid]
+    w = lambda t, x, y, conf=95: dict(text=t, conf=conf, x0=x, y0=y, x1=x + 14 * len(t), y1=y + 20)
+    words = [w("GAMMA", 300, 100), w("RAY", 400, 100), w("0", 102, 200), w("100", 850, 200, 40)]
+    old = e.header
+    e.header = dict(tracks={"track1": dict(x=(100, 900), grid="linear", words=words, curves=ho.propose_curves(words, 100, 900, "linear", track="track1"))})
+    try:
+        assert len(c.get(f"/app/api/{sid}/header/words").json()["words"]) == 4
+        h = c.post(f"/app/api/{sid}/header/words", json={"track": "track1", "edits": [{"i": 3, "text": "200"}], "save": False}).json()
+        (r,) = [r for r in h["rows"] if r["mnemonic"] == "GR"]
+        assert (r["left"], r["right"]) == (0, 200)
+        assert c.post(f"/app/api/{sid}/header/words", json={"track": "track1", "edits": [{"i": 99, "text": "x"}]}).status_code == 400
+        c.post(f"/app/api/{sid}/undo")
+        assert c.get(f"/app/api/{sid}/header/words").json()["words"][3]["text"] == "100"
+    finally:
+        e.header = old

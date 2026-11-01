@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """Headless end-to-end check of the web editor over HTTP (server must be running:
-``pylogdigitizer editor . --port 8765``).
+``pylogdigitizer-app . --port 8765``).
 
 For each well/curve preset: open the scan (auto layout + OCR + conventional trace), then a
 *simulated user* adds anchors QC-guided: at the worst 10-ft window of |digitized - LAS| where the

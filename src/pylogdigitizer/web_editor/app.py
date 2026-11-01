@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""app: FastAPI routes of the local editor. Thin layer over assisted_tracing.AssistedSession.
+"""app: FastAPI core API of the editor, served by ``pylogdigitizer-app`` under /core (no page of its own). Thin layer over assisted_tracing.AssistedSession.
 
 Routes (JSON unless noted; {sid} = session id from POST /api/sessions):
-  GET  /                                   editor page (static/index.html)
   GET  /api/catalog                        scans in the project (example_data + wells config presets)
   POST /api/sessions                       open a scan {scan, curve, well, las, settings{...}, auto_layout}
   GET  /api/sessions/{sid}                 state (tracks, calibration, scale, section, errors, metrics)
@@ -134,10 +133,6 @@ def build_app(project_dir: str = ".") -> FastAPI:
         return _clean(st)
 
     app.state.state_fn = state          # reused by the desktop app (pylogdigitizer.app)
-
-    @app.get("/", response_class=HTMLResponse)
-    def index():
-        return (STATIC / "index.html").read_text()
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 

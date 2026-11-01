@@ -15,7 +15,6 @@ import numpy as np
 from pylogdigitizer import (
     curve_tracing as ct,
     las_export,
-    ml_models,
     ml_training_data as mtd,
     qc_compare as qc,
     workflows as wf,
@@ -273,6 +272,7 @@ def digitize_batch(
     """Batch digitize a list of scans with a trained U-Net profile and export LAS + summary JSON."""
     resolved_model = _resolve_profile_model(profile, model_path=model_path)
     if cost_mode != "conventional" and resolved_model is not None and resolved_model.is_file():
+        from pylogdigitizer import ml_models
         ml_models.get_cached_model(resolved_model)
 
     out_root = Path(out_dir)

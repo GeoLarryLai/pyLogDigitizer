@@ -16,3 +16,4 @@ models/
 runs/
 outputs/
 .venv/
+ocr_corrections/

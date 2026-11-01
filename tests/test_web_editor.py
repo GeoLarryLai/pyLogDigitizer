@@ -116,7 +116,7 @@ def test_api_end_to_end(client, project):
     assert any(c["scan"] == "example_data/SYN_1/syn.tif" for c in cat)
     assert "OpenSeadragon" in client.get("/static/vendor/openseadragon/openseadragon.min.js").text[:2000] or \
         client.get("/static/vendor/openseadragon/openseadragon.min.js").status_code == 200
-    assert "editor.js" in client.get("/").text
+    assert client.get("/").status_code == 404     # the old page is merged into pylogdigitizer-app
     st = client.post("/api/sessions", json=dict(scan="example_data/SYN_1/syn.tif", las="example_data/SYN_1/syn.las",
                                                 curve="GR", well="SYN_1", auto_layout=False,
                                                 settings={"scale": [0, 150], "trace_kw": {"straight_len": 0}})).json()

@@ -865,6 +865,48 @@ def propose_header(source, layout=None, backend="auto", max_workers: int = 4,
                 status="proposed")
 
 
+def apply_word_edits(header: dict, track: str, edits: list[dict]) -> dict:
+    """Correct OCR words of one track and re-fit its proposals (mnemonic, unit, scale) from them.
+
+    edits: ``[{i, text}]`` (index into ``header['tracks'][track]['words']``); an empty text deletes the
+    word. Typed text gets confidence 100 (the 0-100 OCR scale). Returns the header, updated in place,
+    with ``corrected=True`` on edited words."""
+    t = header["tracks"][track]
+    words = [dict(w) for w in t["words"]]
+    for e in edits:
+        i = int(e["i"])
+        if not 0 <= i < len(words):
+            raise IndexError(f"word {i} not in track {track}")
+        words[i].setdefault("ocr_text", words[i]["text"]); words[i].update(text=str(e["text"]).strip(), conf=100.0, corrected=True)
+    t["words"] = words
+    keep = [w for w in words if w["text"]]
+    t["curves"] = propose_curves(keep, t["x"][0], t["x"][1], t["grid"] if t.get("grid") not in (None, "unknown") else None, track=track)
+    header["curves"] = [c for nm in header["tracks"] for c in header["tracks"][nm]["curves"]]
+    return header
+
+
+def save_word_corrections(folder, ink_or_image: np.ndarray, words: list[dict], scan: str = "", offset=(0, 0), pad: int = 3) -> list[str]:
+    """Keep (crop, text) pairs of hand-corrected words for later OCR evaluation: <folder>/<stem>_<n>.png
+    + a line in <folder>/labels.tsv (file, text, original OCR text). offset = (x, y) subtracted from word
+    boxes to index the image."""
+    from PIL import Image
+    folder = Path(folder); folder.mkdir(parents=True, exist_ok=True); out = []
+    img = ink_or_image
+    if img.dtype == bool:
+        img = np.where(img, 0, 255).astype(np.uint8)
+    stem = Path(scan).stem or "scan"; n0 = len(list(folder.glob(f"{stem}_*.png")))
+    with open(folder / "labels.tsv", "a", encoding="utf-8") as f:
+        for k, w in enumerate(w for w in words if w.get("corrected")):
+            x0, x1 = int(w["x0"] - offset[0]) - pad, int(w["x1"] - offset[0]) + pad
+            y0, y1 = int(w["y0"] - offset[1]) - pad, int(w["y1"] - offset[1]) + pad
+            crop = img[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+            if crop.size == 0:
+                continue
+            name = f"{stem}_{n0 + k:04d}.png"; Image.fromarray(crop).save(folder / name)
+            f.write(f"{name}\t{w['text']}\t{w.get('ocr_text', '')}\n"); out.append(name)
+    return out
+
+
 def to_runs(header: dict, min_confidence: float = 0.0, scan: str | None = None) -> list[dict]:
     """Proposals -> dataset-profile style run dicts (curve, track, scale, scale_type, backup) with
     ``scale_source: header_ocr``, ``confirmed: False`` and the fields that need review."""

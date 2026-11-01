@@ -145,6 +145,29 @@ def build_ml_cost(
     return np.where(c0, pen, cost).astype(np.float64)
 
 
+def ml_available() -> bool:
+    """True if the optional torch package is installed (the ML cost map needs it)."""
+    import importlib.util
+    return importlib.util.find_spec("torch") is not None
+
+
+def ml_fallback(cost_mode: str, ml_model: Any = None) -> str:
+    """Return ``cost_mode``, or ``"conventional"`` (with a warning) when torch or a model checkpoint is missing."""
+    if cost_mode == "conventional":
+        return cost_mode
+    import warnings
+    if not ml_available():
+        warnings.warn(f"cost_mode={cost_mode!r} needs torch (pip install torch); using the conventional cost map",
+                      RuntimeWarning, stacklevel=3)
+        return "conventional"
+    try:
+        _resolve_default_ml_model(ml_model)
+    except FileNotFoundError as e:
+        warnings.warn(f"{e} Using the conventional cost map.", RuntimeWarning, stacklevel=3)
+        return "conventional"
+    return cost_mode
+
+
 def _resolve_default_ml_model(ml_model: Any) -> Any:
     if ml_model is not None:
         return ml_model
@@ -386,6 +409,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                                 straight_len=straight_len, return_labels=True)
     cost = cost_conv
     v61, rel_x = None, None
+    if prob_map is None:
+        cost_mode = ml_fallback(cost_mode, ml_model)
     if cost_mode != "conventional":
         import cv2
         from pylogdigitizer import ml_models
