@@ -4,8 +4,6 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/pylogdigitizer.svg)](https://pypi.org/project/pylogdigitizer/) [![pepy downloads](https://static.pepy.tech/badge/pylogdigitizer)](https://pepy.tech/project/pylogdigitizer) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23832013.svg)](https://doi.org/10.5281/zenodo.23832013) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
-v0.1.0
-
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
 
