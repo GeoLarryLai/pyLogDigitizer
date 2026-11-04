@@ -11,7 +11,7 @@
    cost[y, x] + smooth*|dx| + seg_weight * mean(min(cost[y], cost[y-1])[span(px..x)]): a big horizontal jump is
    cheap only if ink connects it (horizontal excursions of the curve), so the path does not hop
    between curves. Anchors pin the path to user points (rows) within ``anchor_tol`` columns.
-Backends: Rust ``curve_tracing_rs`` (if built with maturin) > numba > NumPy reference.
+Backends: Rust ``curve_tracing_rs`` (built by maturin) > numba (only if installed and Rust is missing) > NumPy reference.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -27,11 +27,13 @@ try:
 except ImportError:
     _rs, HAVE_RUST = None, False
 
-try:
-    import numba
-    HAVE_NUMBA = True
-except ImportError:
-    numba, HAVE_NUMBA = None, False
+numba, HAVE_NUMBA = None, False
+if not HAVE_RUST:   # numba is not a dependency: only an optional fallback when the Rust build is missing
+    try:
+        import numba
+        HAVE_NUMBA = True
+    except ImportError:
+        pass
 
 
 if not HAVE_RUST:

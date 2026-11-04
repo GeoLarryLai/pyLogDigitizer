@@ -157,11 +157,13 @@ try:
 except ImportError:
     _rs = None
 
-try:
-    import numba
-    HAVE_NUMBA = True
-except ImportError:
-    numba, HAVE_NUMBA = None, False
+numba, HAVE_NUMBA = None, False
+if _rs is None:     # optional fallback only (numba is not a dependency)
+    try:
+        import numba
+        HAVE_NUMBA = True
+    except ImportError:
+        pass
 
 
 if HAVE_NUMBA:

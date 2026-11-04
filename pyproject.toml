@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = ["numpy", "pillow", "lasio", "pandas", "pyyaml", "opencv-python",
                 "rapidocr>=3,<4", "onnxruntime",   # default OCR engine (header + depth labels); PP-OCRv4 models bundled
-                "numba", "fastapi", "uvicorn", "httpx", "matplotlib"]   # torch optional: ML cost map only
+                "fastapi", "uvicorn", "httpx", "matplotlib"]   # Rust tracer built by maturin; torch optional (training / legacy ML cost map only); matplotlib imported lazily (QC plot)
 
 [project.urls]
 Homepage = "https://github.com/GeoLarryLai/pyLogDigitizer"

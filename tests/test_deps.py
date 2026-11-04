@@ -26,3 +26,28 @@ def test_dropped_dependencies_not_imported():
     pat = re.compile(r"^\s*(import|from)\s+(scipy|skimage|tifffile)\b", re.M)
     hits = [str(p) for p in (ROOT / "src").rglob("*.py") if pat.search(p.read_text())]
     assert not hits, hits
+
+
+def test_runtime_without_numba_torch_matplotlib():
+    """Trim 2: numba and torch are not dependencies, matplotlib loads lazily. The package imports and
+    traces with all three blocked, and importing it does not load them."""
+    import subprocess, sys
+    code = ("import sys\n"
+            "for m in ('numba', 'torch', 'matplotlib', 'scipy', 'skimage', 'tifffile'): sys.modules[m] = None\n"
+            "import numpy as np, warnings\n"
+            "warnings.simplefilter('ignore')\n"
+            "import pylogdigitizer.workflows, pylogdigitizer.app.routes\n"
+            "from pylogdigitizer import curve_tracing as ct, grid_rectify as gr\n"
+            "ink, _, _ = gr.synthetic_grid(H=600, W=200, nv=5, nh=6, margin=10, amp=0, shear=0, seed=0)\n"
+            "v = np.arange(0, 600, 0.25); gr._stamp(ink, 100 + 50 * np.sin(v / 60), v, 3)\n"
+            "T = ct.trace_track(ink, 0, px_per_ft=10)\n"
+            "assert np.isfinite(T['x']).all()\n"
+            "print(ct.backend())\n")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    probe = subprocess.run([sys.executable, "-c", "import sys, pylogdigitizer.workflows, pylogdigitizer.app.routes;"
+                            "print(sorted(m for m in ('numba','torch','matplotlib','scipy') if m in sys.modules))"],
+                           capture_output=True, text=True, timeout=120)
+    assert probe.stdout.strip() == "[]", probe.stdout + probe.stderr[-1000:]
+    deps = re.search(r"dependencies = \[(.*?)\]", (ROOT / "pyproject.toml").read_text(), re.S).group(1)
+    assert '"numba"' not in deps and '"torch"' not in deps
