@@ -179,14 +179,21 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         pan, lat = gr.rectify_panel(pan)
         checks["grid_lines"] = 0 if lat is None else int(lat.X.shape[1])
     nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "auto")
+    vec = None
+    if trace_kw.pop("vector_trace", False):   # vectorize first, drop grid vectors, trace curve vectors only
+        from pylogdigitizer import vectorize as vz
+        vec = vz.vector_separate(pan, n_curves=nc)
+        checks["vector_segments"] = int(sum(s is not None for s in vec["V"]["segs"]))
+        checks["vector_grid_segments"] = int((vec["cls"] == vz.GRID).sum())
+    tpan = pan if vec is None else vec["curve_ink"]
     if nc <= 1:
         trace_kw.pop("pick_margin", None)   # multi-curve only
     if nc > 1:      # several curves in the track (e.g. GR + caliper): trace each, keep ``pick``
-        T = ct.trace_multi(pan, r0, n_curves=nc, pick=pick, px_per_ft=dm.px_per_ft, **trace_kw)
+        T = ct.trace_multi(tpan, r0, n_curves=nc, pick=pick, px_per_ft=dm.px_per_ft, **trace_kw)
         checks["curves_traced"] = len(T["candidates"]); checks["curve_picked"] = T["picked"]
         checks["curve_scores"] = [round(float(t["score"]), 3) for t in T["candidates"]]
     else:
-        T = ct.trace_track(pan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
+        T = ct.trace_track(tpan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)
@@ -200,7 +207,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         except Exception as e:                       # header check is advisory only
             checks["header_depths_error"] = str(e)
     return dict(depth=dm(T["rows"]), value=v, conf=T["conf"], layout=L, depth_map=dm, anchors=anc,
-                residuals=res, checks=checks, trace=T, wraps=wr, panel_rows=(r0, r1), panel=pan)
+                residuals=res, checks=checks, trace=T, wraps=wr, panel_rows=(r0, r1), panel=pan, vector=vec)
 
 
 class SectionChoiceNeeded(CalibrationError):
