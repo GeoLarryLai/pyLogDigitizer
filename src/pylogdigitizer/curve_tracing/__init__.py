@@ -389,14 +389,18 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 grid_frac: float = 0.5, grid_pad: int = 2, px_per_ft: float | None = None,
                 switch_cost: float = 0.5, edge_frac: float = 0.02, use: str | None = None,
                 cost_mode: str = "conventional", ml_model: Any = None, ml_weight: float = 0.15,
-                caliper_weight: float = 0.55, prob_map: np.ndarray | None = None) -> dict:
+                caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
     ``"blend"``, evaluates ``CurveUNet`` (via ``ml_model`` or ``models/kansas_gr_unet.pt``)
     to disfavor competing curves (such as Caliper/SP) before running the DP tracer.
+    ``mask_other``: drop text / stamps / handwriting (separation.other_mask) before tracing.
     """
     from pylogdigitizer import track_grid_detection as tgd
+    if mask_other:
+        from pylogdigitizer import separation
+        panel = separation.curve_layer(panel)
     if fy is None:
         fy = int(np.clip(round(px_per_ft * 0.2), 1, 4)) if px_per_ft else 3
     if max_step is None:
