@@ -77,6 +77,7 @@ wells:
     runs:
       - {scan: 194290.tif, curve: GR, track: track1, scale: [0, 150], backup: [150, 300], wrap_side: right, use_hatch: true, scale_source: header}
       - {scan: 194290.tif, curve: NPHI, track: track2, scale: [30, -10], scale_source: header, note: "% on the log; LAS may be v/v (r unaffected)"}
+      - {scan: 194290.tif, curve: DPHI, track: track2, scale: [30, -10], scale_source: header, trace: {n_curves: 2, pick: second}, note: "second curve of the NPHI track (density porosity, same printed scale); secondary reference"}
       - {scan: 194289.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log, scale_source: assumed}
   - name: BACASTOW_1
     dir: BACASTOW_1_15-035-23415

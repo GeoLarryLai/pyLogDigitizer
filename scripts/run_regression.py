@@ -85,7 +85,9 @@ def run_one(job: dict, use_ocr: bool, q):
             sd = pathlib.Path(job["save_dir"]); sd.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(sd / f"{job['well']}_{pathlib.Path(job['scan']).stem}_{job['curve'].replace(':', '_')}.npz",
                                 depth=np.asarray(R["depth"], float), value=tv, conf=np.asarray(R["conf"], float),
-                                section=ck.get("section_used", -1))
+                                section=ck.get("section_used", -1),
+                                cand_x=np.array([t["x"] for t in R["trace"].get("candidates", [])] or np.zeros((0, len(tv)))),
+                                picked=R["trace"].get("picked", 0), rows=np.asarray(R["trace"]["rows"], float))
         if len(c["grid"]):
             out = ROOT / "outputs" / "qc" / "regression"; out.mkdir(parents=True, exist_ok=True)
             qc.qc_plot(c["grid"], c["ref"], c["test_aligned"],
@@ -124,6 +126,11 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--out", default=str(ROOT / "outputs" / "qc" / "regression_metrics.csv"))
     ap.add_argument("--grid-rectify", action="store_true", help="straighten grid lines inside the track before tracing")
+    ap.add_argument("--auto-scales", default=None,
+                    help="header_scale_check CSV: use its resolved scale/backup and scale_source (ocr / ocr_header / "
+                         "manual / las_fallback); unresolved runs keep the config scale and are labelled 'unresolved'")
+    ap.add_argument("--legend-curves", action="store_true",
+                    help="with --auto-scales: n_curves per track from the header legend (fallback: config/auto)")
     ap.add_argument("--save-traces", default=None, help="directory: save each digitized trace as .npz (depth, value)")
     a = ap.parse_args(argv)
     jobs = jobs_from_config(pathlib.Path(a.config), a.wells, a.only)
@@ -131,6 +138,26 @@ def main(argv=None):
         j["save_dir"] = a.save_traces
         if a.grid_rectify:
             j["grid_rectify"] = True
+    if a.auto_scales:
+        import json
+        import pandas as pd
+        S = pd.read_csv(a.auto_scales)
+        for j in jobs:
+            m = S[(S.well == j["well"]) & (S.scan == j["scan"]) & (S.curve == j["curve"])]
+            if not len(m):
+                continue
+            m = m.iloc[0]
+            sc = json.loads(m.resolved_scale) if isinstance(m.resolved_scale, str) else None
+            if sc:
+                j["scale"] = sc
+                bk = json.loads(m.resolved_backup) if isinstance(m.resolved_backup, str) else None
+                if bk:
+                    j["backup"] = bk
+                j["scale_source"] = m.resolved_source
+            else:
+                j["scale_source"] = "unresolved"
+            if a.legend_curves and "legend_n_curves" in m and int(m.legend_n_curves or 0) >= 2:
+                j["trace"] = {**(j.get("trace") or {}), "n_curves": int(min(3, m.legend_n_curves))}
     if a.trace:
         import json
         for j in jobs:
