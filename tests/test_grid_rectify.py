@@ -151,6 +151,14 @@ def test_app_grid_routes(warped, tmp_path):
     f = c.post(f"/app/api/{sid}/grid/values", json={"labels": [[u[0], 0], [u[5], 15], [u[-1], 150]]}).json()
     assert f["values"][5] == 75 and f["outliers"][0]["suggested"] == 75 and f["warnings"]
     st = c.get(f"/app/api/{sid}/state").json(); assert st["undo"][-1] == "grid values"
+    # header OCR numbers (fraction of track width, value) feed the grid-line values with no clicks
+    fr = lambda x: (x + 0.5) / W
+    row = dict(id="h1", origin="ocr", track="track1", mnemonic="GR", unit="GAPI", left=0, right=150, type="linear",
+               backup_left=None, backup_right=None, points=[[fr(u[0]), 0], [fr(u[5]), 75], [fr(u[-1]), 150]])
+    assert c.post(f"/app/api/{sid}/header", json={"rows": [row], "choice": "h1"}).status_code == 200
+    f = c.post(f"/app/api/{sid}/grid/values", json={}).json()
+    assert f["source"] == "header" and f["values"] == [15.0 * k for k in range(11)] and not f["outliers"]
+    assert f["left"] == pytest.approx(150 * (-0.5 - u[0]) / (u[-1] - u[0]), abs=0.05)
     pv = c.post(f"/app/api/{sid}/grid/preview", json={"i": 3, "j": 4, "x": g["lattice"]["X"][3][4] + 5,
                                                      "y": g["lattice"]["Y"][3][4], "rows": [0, 400]}).json()
     assert pv["png"].startswith("data:image/png;base64,") and pv["lattice"]["X"][3][4] == pytest.approx(g["lattice"]["X"][3][4] + 5)

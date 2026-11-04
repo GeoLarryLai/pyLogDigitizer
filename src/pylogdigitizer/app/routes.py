@@ -92,7 +92,7 @@ def header_rows(h: dict | None) -> list[dict]:
                          backup_left=bk[0] if bk else None, backup_right=bk[1] if bk else None,
                          review=[k for k in ("mnemonic", "unit", "scale_left", "scale_right", "scale_type", "backup") if c[k]["needs_review"]],
                          confidence=round(float(min(c[k]["confidence"] for k in ("scale_left", "scale_right"))), 2),
-                         label=c.get("label", "")))
+                         label=c.get("label", ""), points=(c.get("evidence") or {}).get("scale_points", [])))
     return rows
 
 
@@ -463,7 +463,16 @@ def install(app, root: Path, runner) -> None:
         e = get(sid)
         if body.get("apply", True):
             push_undo(e, "grid values")
-        return _clean(locked(e, lambda s: s.grid_values(body.get("labels"), body.get("kind"), bool(body.get("apply", True)))))
+        labels, kind = body.get("labels"), body.get("kind")
+        src = "labels" if labels else "scale"
+        if not labels:   # the chosen header row's OCR'd scale numbers, placed by their x in the track
+            row = next((r for r in e.app.get("header_rows") or [] if r.get("id") == e.app.get("header_choice")), None)
+            pts = (row or {}).get("points") or []
+            if len(pts) >= 2:
+                w = e.s.width
+                labels = [(f * w - 0.5, v) for f, v in pts]; kind = kind or row.get("type"); src = "header"
+        out = locked(e, lambda s: s.grid_values(labels, kind, bool(body.get("apply", True))))
+        return _clean(dict(out, source=src))
 
     # ---------------- step 7: trace modes (job)
     @app.post("/app/api/{sid}/trace")

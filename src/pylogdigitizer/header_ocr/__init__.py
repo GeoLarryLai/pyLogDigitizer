@@ -611,7 +611,7 @@ def propose_curves(ocr_tokens: list[dict], x_left: float | None = None, x_right:
                           mnemonic=n["mnem"])
             if f is not None:
                 f["ocr"] = float(np.mean([c for _, _, c in nl["pts"]])) / 100
-                f["y"] = nl["y"]; f["text"] = nl["text"]
+                f["y"] = nl["y"]; f["text"] = nl["text"]; f["pts"] = [(x, v) for x, v, _ in nl["pts"]]
                 scales.append(f)
         # drop implausible readings (decorations, tick labels) when a plausible line exists
         rejected = [f["text"] for f in scales if not _plausible(n["mnem"], f["left"], f["right"])]
@@ -673,6 +673,10 @@ def propose_curves(ocr_tokens: list[dict], x_left: float | None = None, x_right:
                         evidence=dict(name_y=round(n["y"], 1), scale_lines=[s["text"] for s in scales],
                                       scale_method=main["method"] if main else None, grid=grid_kind,
                                       rejected_scale_lines=rejected,
+                                      # every OCR'd number of the chosen scale line as (fraction of track width, value):
+                                      # the grid-line value fit uses them (0.1.3)
+                                      scale_points=([(round((x - x_left) / (x_right - x_left), 4), v) for x, v in main["pts"]]
+                                                    if main else []),
                                       scale_sanity=(scale_sanity(n["mnem"], main["left"], main["right"], main["type"])
                                                     if main else []),
                                       single_labels=[(round((nl["pts"][0][0] - x_left) / (x_right - x_left), 3),

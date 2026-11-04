@@ -82,6 +82,8 @@ def test_propose_curves_from_words():
     assert p["mnemonic"]["value"] == "GR" and p["unit"]["value"] == "GAPI"
     assert (p["scale_left"]["value"], p["scale_right"]["value"]) == (0, 150)
     assert p["scale_type"]["value"] == "linear" and p["backup"]["value"] == [150, 300]
+    sp = p["evidence"]["scale_points"]                 # OCR'd numbers placed in the track (grid-line values)
+    assert [v for _, v in sp] == [0, 150] and 0 < sp[0][0] < 0.05 and 0.9 < sp[1][0] < 1.0
     for k in ("mnemonic", "unit", "scale_left", "scale_right", "scale_type", "backup"):
         assert set(p[k]) == {"value", "confidence", "needs_review"} and 0 <= p[k]["confidence"] <= 1
 
