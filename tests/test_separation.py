@@ -42,3 +42,39 @@ def test_masking_helps_tracing(sheet):
         T = ct.trace_track(full, 0, px_per_ft=10, mask_other=m)
         wrong.append(float((np.abs(T["x"] - np.interp(T["rows"], v, uc)) > 10).mean()))
     assert wrong[1] < wrong[0], wrong
+
+
+def test_hairline_curve_falls_back_to_thin_mode():
+    """A 1 px curve is erased by the default width-3 opening; trace_track must notice and recover it."""
+    H, W = 1500, 300
+    v = np.arange(0, H, 0.25); uc = 150 + 90 * np.sin(v / 90)
+    pan = np.zeros((H, W), bool); gr._stamp(pan, uc, v, 1)
+    T = ct.trace_track(pan, 0, px_per_ft=7.5)
+    assert T["params"].get("thin_fallback")
+    err = np.abs(T["x"] - np.interp(T["rows"], v, uc))
+    assert np.median(err) < 3 and (err > 10).mean() < 0.05
+
+
+def test_first_depth_compared_with_first_confirmed_label():
+    from pylogdigitizer import depth_calibration as dc
+    rows = [50 + 600 * k for k in range(8)]                 # lattice index 0 is header junk read as "900"
+    vals = [900] + [1500 + 100 * (k - 1) for k in range(1, 8)]
+    vals[0] = 7                                             # unreadable junk: does not match the lattice
+    _, _, _, info = dc.calibrate_labels(rows, rows, values=vals, first_depth=1500)
+    assert "ocr_disagrees_with_first_depth" not in info
+    _, _, _, info = dc.calibrate_labels(rows, rows, values=vals, first_depth=1600)
+    assert info["ocr_disagrees_with_first_depth"] == (1500.0, 1600)
+
+
+def test_edge_jump_wraps():
+    from pylogdigitizer import scale_wraparound as sw
+    x = np.r_[np.linspace(50, 99, 20), np.linspace(1, 40, 30), np.linspace(40, 2, 10), np.linspace(98, 60, 20)]
+    assert sw.edge_jump_wraps(x, 100) == [(20, 60)]
+    assert sw.edge_jump_wraps(x[::-1] * 0 + 50, 100) == []
+    # the left-wrapping (DT-style) mirror
+    assert sw.edge_jump_wraps(100 - x, 100, wrap_side="left") == [(20, 60)]
+    # faint exit: the path loses the curve at 0.7 W and lands on the backup trace at the left edge
+    x2 = np.r_[np.linspace(50, 72, 20), np.linspace(3, 40, 30), np.linspace(40, 2, 10), np.linspace(75, 60, 20)]
+    assert sw.edge_jump_wraps(x2, 100) == [(20, 60)]
+    # an ordinary swing inside the track is not a wrap
+    assert sw.edge_jump_wraps(np.r_[np.linspace(60, 30, 20), np.linspace(30, 8, 20)], 100) == []

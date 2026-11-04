@@ -18,6 +18,32 @@ def detect_wraps(offscale: np.ndarray, min_len: int = 2) -> list[tuple[int, int]
     return [(int(a), int(b)) for a, b in zip(e[::2], e[1::2]) if b - a >= min_len]
 
 
+def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge: float = 0.12,
+                    off_out=None, off_in=None, jump: float = 0.5) -> list[tuple[int, int]]:
+    """Wraps the tracer itself followed: the path leaves through the ``wrap_side`` edge and next
+    appears at the opposite edge (it is now on the backup trace) until it jumps back the other way.
+    ``off_out`` / ``off_in``: optional per-row flags for the off-scale columns beyond each edge.
+    Returns intervals [a, b) of rows on the backup trace."""
+    x = np.asarray(x, float) / float(width)
+    if wrap_side != "right":
+        x = 1.0 - x
+        off_out, off_in = off_in, off_out
+    hi = (x > 1 - edge) | (np.zeros(len(x), bool) if off_out is None else np.asarray(off_out, bool))
+    lo = (x < edge) | (np.zeros(len(x), bool) if off_in is None else np.asarray(off_in, bool))
+    # a continuous curve cannot cross half the track between two samples: such a jump into the
+    # entry-edge zone is a wrap (the exit side is often faint, so only the landing must be at the edge)
+    far = np.where(hi, 1.0, np.where(lo, 0.0, x))
+    out, a = [], None
+    for i in range(1, len(x)):
+        if a is None and lo[i] and not hi[i] and far[i - 1] - far[i] > jump:
+            a = i
+        elif a is not None and lo[i - 1] and not lo[i] and far[i] - far[i - 1] > jump:
+            out.append((a, i)); a = None
+    if a is not None:
+        out.append((a, len(x)))
+    return out
+
+
 def edge_extent(rows_ink: np.ndarray, from_left: bool = True, max_gap: int = 30, skip: int = 8) -> np.ndarray:
     """For each row, how far ink connected to the entry edge extends (gaps <= ``max_gap`` px are
     bridged, e.g. between hatch lines). Returns x per row (NaN if no ink near the edge)."""

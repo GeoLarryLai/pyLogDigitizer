@@ -316,6 +316,18 @@ def trace_to_values(pan: np.ndarray, T: dict, width: int, scale, scale_type: str
                                          from_left=from_left, use_hatch=use_hatch,
                                          edge_pad=3.0 if use_hatch else 0.0)
         v = sw.unwrap(v, wr, bk)
+        # stretches where the tracer itself followed the backup trace (edge-to-edge jumps): value it
+        # on the backup scale directly
+        oo = oi = None
+        if T.get("pad", 0) > 0 and "path_padded" in T:
+            ncol = T["cost"].shape[1]; pad = T["pad"]
+            oo, oi = T["path_padded"] >= ncol - pad, T["path_padded"] < pad
+        fw = sw.edge_jump_wraps(T["x"], width, wrap_side, off_out=oo, off_in=oi)
+        if fw:
+            bs = mk(0, width, *backup)(T["x"])
+            for a, b in fw:
+                v[a:b] = bs[a:b]
+            wr = sorted(set(wr) | set(fw))
     return v, wr
 
 

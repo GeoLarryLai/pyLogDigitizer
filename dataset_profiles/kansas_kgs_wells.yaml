@@ -62,8 +62,8 @@ wells:
     dir: Minzer_1_15-077-30177
     las: 1044076084.las
     runs:
-      - {scan: 171665.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
-      - {scan: 171662.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
+      - {scan: 171665.tif, curve: GR, track: track1, scale: [0, 100], backup: [100, 200], wrap_side: right, scale_source: assumed, note: "curve wraps on the print (re-enters at the left); backup scale assumed"}
+      - {scan: 171662.tif, curve: GR, track: track1, scale: [0, 100], backup: [100, 200], wrap_side: right, scale_source: assumed, note: "curve wraps on the print (re-enters at the left); backup scale assumed"}
   - name: Swanson_1
     dir: Swanson_1_15-117-20008
     las: 1044077634.las

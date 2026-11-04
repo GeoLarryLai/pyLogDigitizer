@@ -406,7 +406,20 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     if max_step is None:
         max_step = max(5, panel.shape[1] // (2 * fx))
     if min_width is None:
-        min_width = 3   # opening width; 0 = thin-curve mode (line removal), see build_cost
+        # opening width 3 suits most prints; a hairline curve (1-2 px) is erased by it and the path then
+        # parks off-scale, so fall back to thin-curve mode (0 = line removal, see build_cost) and keep
+        # whichever result stays on the track more.
+        kw = dict(locals()); kw.pop("tgd", None); kw.pop("separation", None)
+        kw.update(mask_other=False)
+        T3 = trace_track(**{**kw, "min_width": 3})
+        off3 = float((T3["off_left"] | T3["off_right"]).mean())
+        if off3 <= 0.5:
+            return T3
+        T0 = trace_track(**{**kw, "min_width": 0})
+        if float((T0["off_left"] | T0["off_right"]).mean()) < off3:
+            T0["params"]["thin_fallback"] = True
+            return T0
+        return T3
     vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
     gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])
     cost_conv, lab = build_cost(panel, gcols, min_width=min_width, fy=fy, fx=fx, min_area=min_area,

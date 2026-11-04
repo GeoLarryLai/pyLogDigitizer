@@ -462,8 +462,7 @@ def calibrate_labels(label_rows, heavy_rows, values: list | None = None, first_d
     inferred = infer_label_values(rows, values) if values is not None else None
     if inferred is not None:
         d0, iv, nag = inferred
-        if first_depth is not None and abs(first_depth - d0) > 1e-6:
-            info["ocr_disagrees_with_first_depth"] = (d0, first_depth)
+        user_first = first_depth
         if interval is not None and iv != interval:
             info["ocr_interval"] = iv
         first_depth, interval = d0, iv
@@ -505,6 +504,10 @@ def calibrate_labels(label_rows, heavy_rows, values: list | None = None, first_d
         if len(ok) >= 3:
             info["n_ocr_dropped"] = len(pairs) - len(ok)
             pairs = ok
+        # ``first_depth`` means the first depth number printed below the header: compare it with the
+        # first label OCR confirmed, not with lattice index 0 (often header text or a junk blob)
+        if user_first is not None and pairs and abs(user_first - pairs[0][1]) > 1e-6:
+            info["ocr_disagrees_with_first_depth"] = (float(pairs[0][1]), user_first)
     heavy = np.asarray(heavy_rows, float)
     anchors = snap_to_lines(pairs, heavy, max_dist=snap_px)
     if line_ft is None and len(heavy) > 3:
