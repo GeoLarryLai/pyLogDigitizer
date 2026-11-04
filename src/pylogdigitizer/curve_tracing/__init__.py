@@ -56,7 +56,8 @@ def cost_from_ink(binary_ink: np.ndarray) -> np.ndarray:
 def build_cost(track_ink: np.ndarray, grid_cols: list[tuple[int, int]] | None = None,
                grid_rows_mask: np.ndarray | None = None, min_width: int = 3, neutral: float = 0.6, line_neutral: float = 0.85,
                fy: int = 3, fx: int = 2, line_frac: float = 0.6, min_area: int = 0,
-               straight_len: int = 0, return_labels: bool = False, line_row_cost: float = 0.8):
+               straight_len: int = 0, return_labels: bool = False, line_row_cost: float = 0.8,
+               center_weight: float = 0.0):
     """Cost image for a track window (rows x cols), downsampled by (fy, fx).
 
     - ink thinner than ``min_width`` (thin grid lines, specks) is dropped (morphological opening);
@@ -77,7 +78,9 @@ def build_cost(track_ink: np.ndarray, grid_cols: list[tuple[int, int]] | None = 
     if grid_rows_mask is None:
         grid_rows_mask = track_ink.mean(axis=1) >= line_frac
     heavy = thick.mean(axis=1) >= line_frac
-    rows_all = grid_rows_mask | heavy
+    from pylogdigitizer.separation import hline_bands, band_rows_mask
+    band_rows = band_rows_mask(len(track_ink), hline_bands(track_ink, line_frac))
+    rows_all = grid_rows_mask | heavy | band_rows
     # curve ink: grid-row bands removed and bridged where a stroke continues above and below
     curve = bridge_rows(thick, rows_all)
     if min_area:
@@ -88,7 +91,16 @@ def build_cost(track_ink: np.ndarray, grid_cols: list[tuple[int, int]] | None = 
     ds = lambda m: m[:h2 * fy, :w2 * fx].reshape(h2, fy, w2, fx).any(axis=(1, 3))
     ink = ds(curve)
     cost = np.where(ink, 0.0, 1.0)
+    if center_weight > 0:
+        # thick strokes: prefer the stroke centreline over its edges (no edge hugging / stair steps)
+        off = run_offcentre(curve)
+        blk = off[:h2 * fy, :w2 * fx].reshape(h2, fy, w2, fx).min(axis=(1, 3))
+        cost = np.where(ink, center_weight * np.clip(blk, 0, 1), cost)
     cost[ds(line_ink) & ~ink] = line_row_cost
+    # inside a line band every non-curve cell costs the same: the path bridges the band straight
+    # instead of following the (thick) line sideways
+    rb = band_rows[:h2 * fy].reshape(h2, fy).any(axis=1)
+    cost[rb[:, None] & ~ink] = line_row_cost
     thick = curve
     if straight_len:
         import cv2
@@ -230,7 +242,27 @@ def stroke_labels(thick: np.ndarray, fy: int, fx: int, chunk: int = 20000) -> np
     return out
 
 
-def bridge_rows(ink: np.ndarray, rows_mask: np.ndarray, max_band: int = 9) -> np.ndarray:
+def run_offcentre(ink: np.ndarray, chunk: int = 4096) -> np.ndarray:
+    """Per ink pixel, how far it sits from the centre of its horizontal run: 0 at the centre,
+    1 at the run ends (paper: 1). Thin runs (<= 3 px) are all 0."""
+    h, w = ink.shape
+    out = np.ones((h, w), np.float32)
+    idx = np.arange(w)[None, :]
+    for y0 in range(0, h, chunk):
+        m = ink[y0:y0 + chunk]
+        if not m.any():
+            continue
+        # start / end column of the run each pixel belongs to
+        st = np.where(~m, idx + 1, 0); st = np.maximum.accumulate(st, axis=1)
+        en = np.where(~m, idx - 1, w - 1)[:, ::-1]; en = np.minimum.accumulate(en, axis=1)[:, ::-1]
+        half = (en - st) / 2.0
+        c = (st + en) / 2.0
+        o = np.where(half > 1.5, np.abs(idx - c) / np.maximum(half, 1e-6), 0.0)
+        out[y0:y0 + chunk] = np.where(m, o, 1.0)
+    return out
+
+
+def bridge_rows(ink: np.ndarray, rows_mask: np.ndarray, max_band: int = 40) -> np.ndarray:
     """Remove the ink of full-width line rows (``rows_mask``) and reconnect strokes across each
     removed band: a pixel in the band is set if there is ink directly above and below the band
     (within 2 px). A solid curve crossing grid lines stays one component; dots/dashes of a
@@ -247,7 +279,13 @@ def bridge_rows(ink: np.ndarray, rows_mask: np.ndarray, max_band: int = 9) -> np
             continue
         up = out[max(0, a - 2):a].any(axis=0) if a > 0 else np.zeros(ink.shape[1], bool)
         dn = out[e:min(h, e + 2)].any(axis=0) if e < h else np.zeros(ink.shape[1], bool)
-        out[a:e] |= (up & dn)[None, :]
+        if e - a > 9:   # thick band: a steep stroke may shift sideways while crossing it
+            import cv2
+            k = np.ones((1, 2 * ((e - a) // 2) + 1), np.uint8)
+            both = cv2.dilate(up.astype(np.uint8)[None], k)[0].astype(bool) & cv2.dilate(dn.astype(np.uint8)[None], k)[0].astype(bool)
+            out[a:e] |= (both & (up | dn))[None, :]
+        else:
+            out[a:e] |= (up & dn)[None, :]
     return out
 
 
@@ -393,7 +431,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 cost_mode: str = "conventional", ml_model: Any = None, ml_weight: float = 0.15,
                 caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False,
                 seg: bool | str = False, seg_mix: float = 0.5, avoid_paths: list | None = None,
-                avoid_band: int = 3, avoid_cost: float = 0.6) -> dict:
+                avoid_band: int = 3, avoid_cost: float = 0.6, grid_veto: bool | float = False,
+                line_neutral: float = 0.85, center_weight: float = 0.0) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
@@ -402,6 +441,12 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     ``mask_other``: drop text / stamps / handwriting (separation.other_mask) before tracing.
     ``seg``: True (bundled model) or a path to an ONNX segmentation model (segmentation.Segmenter);
     the cost becomes (1 - seg_mix) * conventional + seg_mix * (1 - P(curve)).
+    ``grid_veto``: True (or a threshold, default 0.5) - cells the segmentation model labels grid
+    (P(grid) >= threshold and P(curve) < 0.3) cost 0.97: still crossable, never followed (thick
+    reference / grid lines the rules keep as curve ink).
+    ``line_neutral``: cost of straight vertical runs and grid columns (crossed, not followed).
+    ``center_weight``: extra cost at the edges of thick strokes (0 = off), so the path follows the
+    stroke centreline instead of hugging one edge.
     """
     from pylogdigitizer import track_grid_detection as tgd
     if mask_other:
@@ -429,7 +474,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
     gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])
     cost_conv, lab = build_cost(panel, gcols, min_width=min_width, fy=fy, fx=fx, min_area=min_area,
-                                straight_len=straight_len, return_labels=True)
+                                straight_len=straight_len, return_labels=True, line_neutral=line_neutral,
+                                center_weight=center_weight)
     cost = cost_conv
     seg_p = None
     if seg:
@@ -443,7 +489,29 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         # the model may only re-rank ink the conventional cost kept: cells it already ruled out
         # (paper, straight grid / reference lines, line rows) stay ruled out
         blend = ((1 - seg_mix) * cost_conv + seg_mix * (1.0 - seg_p)).astype(cost_conv.dtype)
-        cost_conv = np.where(cost_conv >= 0.99, cost_conv, blend).astype(cost_conv.dtype)
+        keep = cost_conv >= 0.99
+        # line bands keep the conventional cost: the model must not make a (thick) depth line
+        # attractive (it is grid, even where it scores it as curve)
+        from pylogdigitizer.separation import hline_bands, band_rows_mask
+        rb = band_rows_mask(len(panel), hline_bands(panel))[: hh * fy]
+        rb = np.pad(rb, (0, hh * fy - len(rb))).reshape(hh, fy).any(axis=1)
+        keep |= rb[:, None] & (cost_conv > 0)
+        cost_conv = np.where(keep, cost_conv, blend).astype(cost_conv.dtype)
+        cost = cost_conv
+    if grid_veto:
+        from pylogdigitizer import segmentation as sgm
+        thr = 0.5 if grid_veto is True else float(grid_veto)
+        pr = sgm.get_segmenter().predict(panel)
+        hh, ww = cost_conv.shape
+        def _ds(m):
+            m = m[: hh * fy, : ww * fx]
+            m = np.pad(m, ((0, hh * fy - m.shape[0]), (0, ww * fx - m.shape[1])))
+            return m.reshape(hh, fy, ww, fx).mean(axis=(1, 3))
+        ink_ds = _ds(np.asarray(panel, np.float32))
+        pg = _ds(pr[sgm.GRID] * panel) / np.maximum(ink_ds, 1e-6)
+        pcv = _ds(pr[sgm.CURVE] * panel) / np.maximum(ink_ds, 1e-6)
+        veto = (ink_ds > 0) & (pg >= thr) & (pcv < 0.3)
+        cost_conv = np.where(veto, np.maximum(cost_conv, 0.97), cost_conv).astype(cost_conv.dtype)
         cost = cost_conv
     v61, rel_x = None, None
     if prob_map is None:
@@ -502,6 +570,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         k = np.ones(15) / 15.0
         T["ml_conf"] = np.clip(np.convolve(p_along, k, mode="same"), 0.0, 1.0)
         T["prob_map"] = prob_map
+    from pylogdigitizer.separation import hline_bands, thick_band_anchors
+    T["depth_line_rows"] = [row0 + r for r in thick_band_anchors(hline_bands(panel))]   # heavy depth lines
     T.update(
         labels=lab,
         cost_conv=cost_conv,
@@ -565,6 +635,112 @@ def untangle(a: np.ndarray, b: np.ndarray, near: float = 4.0, w: int = 6) -> np.
     return swap
 
 
+def path_widths(panel: np.ndarray, T: dict, search: int = 2) -> np.ndarray:
+    """Horizontal stroke width (px) of the ink under the path at every path row (0 = no ink
+    within ``search`` px). Line style signal: a thick curve vs a thin one."""
+    p = np.asarray(panel, bool); h, w = p.shape
+    r = np.clip((np.asarray(T["rows"]) - T.get("row0", 0)).astype(int), 0, h - 1)
+    x = np.clip(np.asarray(T["x"]).astype(int), 0, w - 1)
+    out = np.zeros(len(r), np.float32)
+    for i, (y, c) in enumerate(zip(r, x)):
+        row = p[y]
+        lo, hi = max(0, c - search), min(w, c + search + 1)
+        hit = np.flatnonzero(row[lo:hi])
+        if not len(hit):
+            continue
+        k = lo + hit[np.argmin(np.abs(lo + hit - c))]
+        a = k
+        while a > 0 and row[a - 1]:
+            a -= 1
+        b = k
+        while b < w - 1 and row[b + 1]:
+            b += 1
+        out[i] = b - a + 1
+    return out
+
+
+def path_style(panel: np.ndarray, T: dict) -> dict:
+    """LAS-free line style of a traced candidate: width (median stroke width on ink, px), ink
+    (share of on-track rows on ink: < ~0.7 = dashed/dotted) and dash_period (rows between ink
+    gaps, from the autocorrelation of the on/off signal; 0 = solid)."""
+    wd = path_widths(panel, T)
+    track = ~(T["off_left"] | T["off_right"])
+    on = (wd > 0) & track
+    width = float(np.median(wd[on])) if on.any() else 0.0
+    ink = float(on[track].mean()) if track.any() else 0.0
+    period = 0.0
+    sig = on[track].astype(float)
+    if len(sig) > 200 and 0.1 < ink < 0.9:
+        sig = sig - sig.mean()
+        ac = np.correlate(sig[:4000], sig[:4000], "full")[len(sig[:4000]) - 1:]
+        ac = ac / max(ac[0], 1e-9)
+        lag = int(np.argmax(ac[3:200])) + 3
+        if ac[lag] > 0.2:
+            period = float(lag * T["fy"])
+    return dict(width=width, ink=ink, dash_period=period, widths=wd)
+
+
+def style_distance(a: dict, b: dict) -> float:
+    """Distance between two line styles (widths in px, ink share, dashed or not)."""
+    dw = abs(a["width"] - b["width"]) / max(1.0, max(a["width"], b["width"]))
+    di = abs(a["ink"] - b["ink"])
+    dd = float((a.get("dash_period", 0) > 0) != (b.get("dash_period", 0) > 0))
+    return dw + di + 0.5 * dd
+
+
+def restyle_segments(A: dict, B: dict, wa: np.ndarray, wb: np.ndarray, near: float = 4.0,
+                     min_len: int = 20) -> np.ndarray:
+    """Per-segment curve identity by line style: between contacts of two traces, swap a segment
+    when its stroke widths match the other trace's overall width better (a thick and a thin curve
+    that the DP exchanged at a crossing). Returns a boolean per row: True = exchange."""
+    a, b = np.asarray(A["path"], float), np.asarray(B["path"], float)
+    n = len(a)
+    swap = np.zeros(n, bool)
+    oa, ob = wa > 0, wb > 0
+    if oa.sum() < 50 or ob.sum() < 50:
+        return swap
+    touch = np.abs(a - b) <= near
+    starts = np.flatnonzero(np.diff(np.r_[1, touch.astype(np.int8)]) == -1)
+    ends = np.flatnonzero(np.diff(np.r_[touch.astype(np.int8), 1]) == 1) + 1
+    segs = []
+    for s0, e0 in zip(starts, ends):
+        if e0 - s0 < min_len:
+            continue
+        sa, sb = wa[s0:e0][oa[s0:e0]], wb[s0:e0][ob[s0:e0]]
+        if len(sa) < min_len // 2 or len(sb) < min_len // 2:
+            continue
+        d = float(np.median(sa) - np.median(sb))
+        if abs(d) >= 1.5:               # widths tell the two curves apart here
+            segs.append((s0, e0, d > 0))
+    if not segs:
+        return swap
+    la = sum(e0 - s0 for s0, e0, t in segs if t)          # rows where A is the thicker one
+    lb = sum(e0 - s0 for s0, e0, t in segs if not t)
+    a_thick = la >= lb
+    for s0, e0, t in segs:
+        if t != a_thick:
+            swap[s0:e0] = True
+    return swap
+    ga, gb = np.median(wa[oa]), np.median(wb[ob])
+    if abs(ga - gb) < 1.5:          # same style: width cannot tell them apart
+        return swap
+    touch = np.abs(a - b) <= near
+    starts = np.flatnonzero(np.diff(np.r_[1, touch.astype(np.int8)]) == -1)
+    ends = np.flatnonzero(np.diff(np.r_[touch.astype(np.int8), 1]) == 1) + 1
+    for s0, e0 in zip(starts, ends):
+        if e0 - s0 < min_len:
+            continue
+        sa, sb = wa[s0:e0][oa[s0:e0]], wb[s0:e0][ob[s0:e0]]
+        if len(sa) < min_len // 2 or len(sb) < min_len // 2:
+            continue
+        ma, mb = np.median(sa), np.median(sb)
+        keep = abs(ma - ga) + abs(mb - gb)
+        flip = abs(ma - gb) + abs(mb - ga)
+        if flip + 1.0 < keep:
+            swap[s0:e0] = True
+    return swap
+
+
 def candidate_features(T: dict) -> dict:
     """LAS-free description of one traced candidate, for choosing between curves in one track.
     on_track: share of rows inside the track (not parked off-scale); on_ink: share on ink;
@@ -595,13 +771,17 @@ def auto_pick_score(f: dict) -> float:
 
 
 def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "auto",
-                min_on_ink: float = 0.4, cross: bool = True, **kw) -> dict:
+                min_on_ink: float = 0.4, cross: bool = True, style: bool = True,
+                legend: list | None = None, legend_target: int = 0, **kw) -> dict:
     """Trace up to ``n_curves`` curves sharing a track: each pass treats the curves already traced
     as used ink (``avoid_cost`` 0.97 by default: a later pass must find other ink, so candidates are
     distinct curves, or the pass is dropped). ``pick``: an index (0 = strongest), "rough" (most
     thin-bed detail) or "auto" (:func:`auto_pick_score`, LAS-free). A pass is kept
-    only when at least ``min_on_ink`` of its samples are on ink. The returned trace dict carries
-    ``candidates`` (all traces) and ``picked``."""
+    only when at least ``min_on_ink`` of its samples are on ink. ``style``: after the crossing
+    untangle, re-assign segments by stroke width (:func:`restyle_segments`). ``legend``: line
+    styles read from the track header (header_legend.legend_styles); with ``pick="legend"`` the
+    candidate closest to entry ``legend_target`` is returned. The returned trace dict carries
+    ``candidates`` (all traces, each with ``style``) and ``picked``."""
     kw.setdefault("avoid_cost", 0.97)
     Ts = []
     for _ in range(max(1, n_curves)):
@@ -621,12 +801,34 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
                 a, b = A[k].copy(), B[k].copy()
                 a[sw], b[sw] = B[k][sw], A[k][sw]
                 A[k], B[k] = a, b
+    if style and len(Ts) == 2:   # per-segment identity by stroke width (thick vs thin curve)
+        A, B = Ts
+        sw = restyle_segments(A, B, path_widths(panel, A), path_widths(panel, B), near=max(1.0, 4.0 / A["fx"]))
+        if sw.any():
+            for k in ("path", "path_padded", "x", "conf", "off_left", "off_right"):
+                a, b = A[k].copy(), B[k].copy()
+                a[sw], b[sw] = B[k][sw], A[k][sw]
+                A[k], B[k] = a, b
+    for t in Ts:
+        t["style"] = {k: v for k, v in path_style(panel, t).items() if k != "widths"}
+    if legend:
+        # assign candidates to legend entries (header line samples) by style; the target curve is
+        # the entry legend_target (default 0 = first legend entry)
+        tgt = legend[min(legend_target, len(legend) - 1)]
+        d = [style_distance(t["style"], tgt) for t in Ts]
+        for t, dd in zip(Ts, d):
+            t["legend_distance"] = dd
+        if isinstance(pick, str) and pick == "legend":
+            pick = int(np.argmin(d))
     for t in Ts:
         t["features"] = candidate_features(t)
         t["roughness"] = roughness(t["x"][~(t["off_left"] | t["off_right"])])
         t["score"] = auto_pick_score(t["features"])
     if isinstance(pick, (int, np.integer)):
         i = int(min(pick, len(Ts) - 1))
+    elif pick == "second":     # the companion curve: second-best auto score (e.g. DPHI beside NPHI)
+        order = np.argsort([-t["score"] for t in Ts])
+        i = int(order[1] if len(order) > 1 else order[0])
     elif pick == "rough":
         i = int(np.argmax([t["roughness"] for t in Ts]))
     else:   # "auto"

@@ -26,7 +26,62 @@ def grid_mask(ink: np.ndarray, length: int = 61, max_width: int = 3) -> np.ndarr
     wh = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_OPEN, np.ones((max_width + 1, 1), np.uint8)).astype(bool)
     vg = line_response(ink, "v", length) & ~wv
     hg = line_response(ink, "h", length) & ~wh
-    return (vg | hg) & g
+    out = (vg | hg) & g
+    # full-width horizontal bands of any thickness (thick depth lines are > max_width) are grid,
+    # except where a curve stroke crosses them (ink right above and below the band)
+    bands = hline_bands(ink)
+    for a, e in bands:
+        up = ink[max(0, a - 3):a].any(axis=0) if a > 0 else np.zeros(ink.shape[1], bool)
+        dn = ink[e:e + 3].any(axis=0)
+        cross = cv2.dilate((up & dn).astype(np.uint8)[None], np.ones((1, 5), np.uint8))[0].astype(bool)
+        out[a:e] |= ink[a:e] & ~cross[None, :]
+    return out
+
+
+def hline_bands(ink: np.ndarray, frac: float = 0.6, max_h: int = 40, min_run: float = 0.25) -> list[tuple[int, int]]:
+    """Full-track-width horizontal line bands (thin grid rows and thick depth lines, e.g. every
+    100 ft), as (first_row, end_row). A row belongs to a band when >= ``frac`` of it is ink in
+    horizontal runs of >= ``min_run`` x width (a curve, even a flat one, never fills a row like that);
+    bands taller than ``max_h`` rows (stamps, header blocks) are dropped."""
+    ink = np.asarray(ink, bool)
+    h, w = ink.shape
+    if not h or not w:
+        return []
+    import cv2
+    L = max(15, int(min_run * w))
+    runs = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_OPEN, np.ones((1, L), np.uint8)).astype(bool)
+    rows = np.flatnonzero(runs.mean(axis=1) >= frac)
+    if not len(rows):
+        return []
+    out = []
+    for b in np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1):
+        a, e = int(b[0]), int(b[-1]) + 1
+        # include the faded fringe rows of the band (half coverage) on both sides
+        cov = runs.mean(axis=1)
+        while a > 0 and cov[a - 1] >= frac / 2:
+            a -= 1
+        while e < h and cov[e] >= frac / 2:
+            e += 1
+        if e - a <= max_h and (not out or a > out[-1][1]):
+            out.append((a, e))
+    return out
+
+
+def band_rows_mask(h: int, bands) -> np.ndarray:
+    m = np.zeros(h, bool)
+    for a, e in bands:
+        m[a:e] = True
+    return m
+
+
+def thick_band_anchors(bands, min_h: int | None = None) -> list[float]:
+    """Centre rows of the thicker bands (heavier than the median grid row: the 50/100-ft depth
+    lines). Periodic in depth, so usable as depth anchors / QC of the label lattice."""
+    if not bands:
+        return []
+    hs = np.array([e - a for a, e in bands])
+    thr = min_h if min_h is not None else max(np.median(hs) * 1.6, np.median(hs) + 2)
+    return [0.5 * (a + e - 1) for (a, e), hh in zip(bands, hs) if hh >= thr]
 
 
 def other_mask(ink: np.ndarray, grid: np.ndarray | None = None, char_h: tuple[int, int] = (6, 45),
