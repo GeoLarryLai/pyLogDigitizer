@@ -25,13 +25,13 @@ wells:
     las: 1044194859.las
     runs:
       - {scan: 260246.tif, curve: DT, track: track2, scale: [140, 40], backup: [240, 140], wrap_side: left, scale_source: header}
-      - {scan: 260245.tif, curve: "GR:2", track: track1, scale: [0, 100], scale_source: assumed}
+      - {scan: 260245.tif, curve: "GR:2", track: track1, scale: [0, 160], backup: [160, 320], wrap_side: right, scale_source: header, note: "print: GAMMA RAY API 0-160, backup 160-320 (hatched)"}
   - name: ELY_1
     dir: ELY_1_15-135-19136
     las: 1006347170.las
     runs:
-      - {scan: 341411.tif, curve: GR, track: track1, scale: [0, 100], scale_source: assumed}
-      - {scan: 341411.tif, curve: DT, track: track2, scale: [140, 40], scale_source: assumed}
+      - {scan: 341411.tif, curve: GR, track: track1, scale: [10, 110], backup: [110, 310], wrap_side: right, scale_source: header, note: "print: GAMMA API 10-110, backup 110-310 (both 2in and 5in sections)"}
+      - {scan: 341411.tif, curve: DT, track: track2, scale: [100, 40], backup: [160, 100], wrap_side: left, scale_source: header, note: "print: TRAVEL TIME 100-40, backup 160-100"}
   - name: GOHEEN_UNIT_1
     dir: GOHEEN_UNIT_1_15-191-30175
     las: 1042553292.las
@@ -62,8 +62,8 @@ wells:
     dir: Minzer_1_15-077-30177
     las: 1044076084.las
     runs:
-      - {scan: 171665.tif, curve: GR, track: track1, scale: [0, 100], backup: [100, 200], wrap_side: right, scale_source: assumed, note: "curve wraps on the print (re-enters at the left); backup scale assumed"}
-      - {scan: 171662.tif, curve: GR, track: track1, scale: [0, 100], backup: [100, 200], wrap_side: right, scale_source: assumed, note: "curve wraps on the print (re-enters at the left); backup scale assumed"}
+      - {scan: 171665.tif, curve: GR, track: track1, scale: [10, 110], backup: [110, 310], wrap_side: right, scale_source: header, note: "print: GAMMA counts per second 10-110, backup 110-310"}
+      - {scan: 171662.tif, curve: GR, track: track1, scale: [10, 110], backup: [110, 310], wrap_side: right, scale_source: header, note: "print: GAMMA counts per second 10-110, backup 110-310"}
   - name: Swanson_1
     dir: Swanson_1_15-117-20008
     las: 1044077634.las
