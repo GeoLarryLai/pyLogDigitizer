@@ -783,6 +783,10 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
     candidate closest to entry ``legend_target`` is returned. The returned trace dict carries
     ``candidates`` (all traces, each with ``style``) and ``picked``."""
     kw.setdefault("avoid_cost", 0.97)
+    # edge-snap guard: parking off-scale must cost more than crossing ink a pass may not follow
+    # (used by an earlier candidate, or vetoed as grid, both 0.97); otherwise a candidate drops to
+    # the track border wherever its curve passes through such ink. Paper (1.0) still parks.
+    kw.setdefault("offscale_cost", max(0.98, float(kw["avoid_cost"]) + 0.01))
     Ts = []
     for _ in range(max(1, n_curves)):
         T = trace_track(panel, row0, avoid_paths=[t["path"] for t in Ts] or None, **kw)
