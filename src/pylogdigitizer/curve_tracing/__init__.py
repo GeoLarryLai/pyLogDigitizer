@@ -476,9 +476,10 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         return T3
     if grid_removed:
         from pylogdigitizer.separation import remove_grid
+        # erased grid columns are paper now: no line_neutral corridor (the tracer would ride the
+        # empty column); grid_veto (seg model) stays on as the backstop for any leftover lines
         panel = remove_grid(panel)
         gcols = list(exclude_cols or [])
-        grid_veto = False
     else:
         vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
         gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])

@@ -37,3 +37,16 @@ def test_trace_on_grid_removed_follows_curve():
     T = ct.trace_track(ink, 0, px_per_ft=10, grid_removed=True)
     err = np.abs(T["x"] - np.interp(T["rows"], np.arange(len(x)), x))
     assert np.median(err) < 3 and np.mean(err > 10) < 0.02
+
+
+def test_remove_grid_erases_dashed_columns():
+    ink, x = _panel()
+    rng = np.random.default_rng(1)
+    for x0 in (60, 240):
+        ink[:, x0:x0 + 2] = False
+        for y in range(0, ink.shape[0], 12):
+            ink[y:y + 7, x0:x0 + 2] = True          # dashed column (7 on / 5 off)
+    out = sep.remove_grid(ink)
+    for x0 in (60, 240):
+        r = np.arange(len(x)); far = np.abs(x - x0) > 8
+        assert out[r[far], x0].mean() < 0.01

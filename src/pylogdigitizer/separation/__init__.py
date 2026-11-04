@@ -155,7 +155,7 @@ def _runs(row: np.ndarray) -> list:
 
 
 def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_length: int = 301,
-                max_bridge: int = 41, return_masks: bool = False):
+                max_bridge: int = 41, return_masks: bool = False, col_frac: float = 0.3):
     """Grid-removed ink: what is left for the tracer once the grid lattice is erased.
 
     Erased: thin vertical / horizontal grid lines (:func:`grid_mask` rules), full-width horizontal
@@ -181,6 +181,23 @@ def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_lengt
         hb = max(hb, e - a)
     if ref_length and ink.shape[0] >= ref_length:
         V |= line_response(wv, "v", ref_length, tilt=0) & ink   # thick straight vertical runs only
+    # detected grid columns (column ink fraction, robust to dashed / broken lines): erase every
+    # pixel inside the column whose horizontal ink run is no wider than the column (a curve
+    # crossing it is wider and is kept; narrow steep crossings are restored by closing below)
+    from pylogdigitizer.track_grid_detection import vertical_lines
+    cols = []
+    for l in vertical_lines(ink, col_frac):
+        x0, x1 = max(0, l["x0"] - 1), min(ink.shape[1], l["x1"] + 1)
+        cols.append((x0, x1, l["width"]))
+    if cols:
+        d = np.diff(np.pad(ink.astype(np.int8), ((0, 0), (1, 1))), axis=1)
+        runlen = np.zeros(ink.shape, np.int32)
+        for yy, xs in enumerate(d):
+            st, en = np.flatnonzero(xs == 1), np.flatnonzero(xs == -1)
+            for p_, q_ in zip(st, en):
+                runlen[yy, p_:q_] = q_ - p_
+        for x0, x1, w in cols:
+            V[:, x0:x1] |= ink[:, x0:x1] & (runlen[:, x0:x1] <= w + 1)
     vw = 1
     if V.any():
         n, lab, st, _ = cv2.connectedComponentsWithStats(V.astype(np.uint8), connectivity=8)
