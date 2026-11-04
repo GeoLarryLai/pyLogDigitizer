@@ -149,7 +149,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
                    backup: tuple[float, float] | None = None, wrap_side: str = "right",
                    use_hatch: bool = True, label_interval: float | None = None, layout: Layout | None = None,
                    x_range=None, rows=None, scale_type: str = "linear", use_ocr: bool = True,
-                   section: int | None = None, **trace_kw) -> dict:
+                   section: int | None = None, grid_rectify: bool = False, **trace_kw) -> dict:
     """Conventional end-to-end digitization of one curve.
 
     ``scale`` = (value at left edge, value at right edge) of ``track`` (reversed allowed, e.g. DT
@@ -174,6 +174,10 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
                                f"({dm(lo_row):.0f}-{dm(hi_row):.0f} ft)")
     width = width or L.width_of(track)
     pan = L.panel(track, (r0, r1), width)
+    if grid_rectify:   # straighten bent grid lines inside the track before tracing (0.1.3)
+        from pylogdigitizer import grid_rectify as gr
+        pan, lat = gr.rectify_panel(pan)
+        checks["grid_lines"] = 0 if lat is None else int(lat.X.shape[1])
     T = ct.trace_track(pan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),

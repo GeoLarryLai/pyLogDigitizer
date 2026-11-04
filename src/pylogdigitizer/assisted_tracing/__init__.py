@@ -63,6 +63,7 @@ class AssistedSession:
         self.dm = None; self.depth_anchors: list[tuple[float, float]] = []; self.depth_checks: dict = {}; self.depth_source = ""
         self.depth_section: int | None = None; self.depth_sections: list[dict] = []   # log sections on the sheet
         self.section: dict | None = None; self.pan = None; self.width = 0; self._prob_map = None
+        self.grid_lattice = None; self._pan_raw = None; self.grid_fit = None
         self.T: dict | None = None; self.anchors: list[tuple[float, float]] = []
         self.excluded: list[tuple[float, float]] = []    # "not this curve" clicks (sheet_row, x_panel)
         self.excluded_ids: list[int] = []; self.anchor_window_ft: dict = {}
@@ -222,6 +223,7 @@ class AssistedSession:
             self.section = dict(kind="track", track=track, rows=[r0, r1], width=w)
             self.pan = self.L.panel(track, (r0, r1), w); self.width = w
         self.T = None; self._prob_map = None; self.anchors = []; self.excluded = []; self.backup_intervals = []; self.values = None; self.wraps = []
+        self.grid_lattice = None; self._pan_raw = None; self.grid_fit = None
         self.strokes = []; self.decisions = []; self.change_log = []; self._undo = []; self._spots = None
         self.history.append("section")
 
@@ -283,18 +285,92 @@ class AssistedSession:
         li, ri = self.L.edge_names.index(n + ".left"), self.L.edge_names.index(n + ".right")
         return np.interp(rows, self.L.centers, self.L.edges[:, li]), np.interp(rows, self.L.centers, self.L.edges[:, ri])
 
-    def sheet_to_panel(self, row, x):
-        """Sheet (row, x) -> panel column (inverse of track_grid_detection.rectify)."""
+    def _sheet_to_raw(self, row, x):
         l, r = self._edges(row)
         if self.section["kind"] == "box":
             return np.asarray(x, float) - l
         return (np.asarray(x, float) - l) / (r - l) * self.width - 0.5
 
-    def panel_to_sheet(self, row, xp):
+    def _raw_to_sheet(self, row, xp):
         l, r = self._edges(row)
         if self.section["kind"] == "box":
             return l + np.asarray(xp, float)
         return l + (np.asarray(xp, float) + 0.5) / self.width * (r - l)
+
+    def sheet_to_panel(self, row, x):
+        """Sheet (row, x) -> panel column (inverse of track_grid_detection.rectify, then of the
+        grid lattice when the section is grid-rectified)."""
+        xr = self._sheet_to_raw(row, x)
+        lat = getattr(self, "grid_lattice", None)
+        if lat is None:
+            return xr
+        rr = np.asarray(row, float) - self.section["rows"][0]
+        return lat.to_rectified(np.broadcast_to(xr, np.broadcast(xr, rr).shape), np.broadcast_to(rr, np.broadcast(xr, rr).shape))[0]
+
+    def panel_to_sheet(self, row, xp):
+        lat = getattr(self, "grid_lattice", None)
+        if lat is not None:
+            rr = np.asarray(row, float) - self.section["rows"][0]
+            b = np.broadcast(np.asarray(xp, float), rr).shape
+            xp = lat.to_sheet(np.broadcast_to(np.asarray(xp, float), b), np.broadcast_to(rr, b))[0]
+        return self._raw_to_sheet(row, xp)
+
+    # ------------------------------------------------------------------ grid rectification + grid-line values (0.1.3)
+    def rectify_grid(self, lattice=None, **kw) -> dict:
+        """Detect the vertical grid lines of the current section, straighten them (x-warp per row,
+        piecewise bilinear between lines; depth is left to the depth calibration) and re-cut the
+        panel in rectified space. ``lattice`` (dict) applies an edited lattice instead. Clears the trace."""
+        from pylogdigitizer import grid_rectify as gr
+        self._need_section()
+        raw = getattr(self, "_pan_raw", None)
+        if raw is None:
+            raw = self.pan
+        if lattice is not None:
+            lat = gr.Lattice.from_dict(lattice) if isinstance(lattice, dict) else lattice
+        else:
+            lat = gr.detect_lattice(raw, **kw)
+            if lat is None or lat.X.shape[1] < 3:
+                raise SessionError("fewer than 3 vertical grid lines found in this section")
+        lat = gr.x_only(lat, raw.shape)   # depth stays with the depth calibration
+        before = lat.residual()
+        self._pan_raw = raw
+        self.pan = np.ascontiguousarray(gr.rectify_image(raw, lat, raw.shape))
+        self.grid_lattice = lat
+        self.T = None; self._prob_map = None; self.anchors = []; self.excluded = []; self.values = None; self.wraps = []
+        self.strokes = []; self.decisions = []; self.change_log = []; self._undo = []; self._spots = None
+        self.history.append("rectify_grid")
+        return dict(lines=lat.u.tolist(), n_rows=int(len(lat.v)), warp_px=before)
+
+    def unrectify_grid(self):
+        if getattr(self, "_pan_raw", None) is not None:
+            self.pan = self._pan_raw; self._pan_raw = None; self.grid_lattice = None
+            self.T = None; self.values = None; self.history.append("unrectify_grid")
+
+    def grid_values(self, labels=None, kind: str | None = None, apply: bool = True) -> dict:
+        """Value of every vertical grid line from labels [(panel_x, value)] (default: the current
+        scale ends, so the detected lines get their implied values), with consistency warnings.
+        ``apply`` sets the track scale from the fit (exact at the edges in rectified space)."""
+        from pylogdigitizer import grid_values as gv
+        self._need_section()
+        lx = self.grid_lines() if getattr(self, "grid_lattice", None) is None else list(self.grid_lattice.u)
+        sc_ = self.scale
+        if not labels:
+            labels = [(-0.5, sc_["left"]), (self.width - 0.5, sc_["right"])]
+            kind = kind or sc_["type"]
+        if len(lx) < 2:   # no clean straight lines (warped, unrectified): the labels are the knots
+            lx = sorted(float(x) for x, _ in labels)
+        fit = gv.fit_line_values(lx, labels, kind)
+        if fit is None:
+            raise SessionError("need at least 2 grid-line labels with values")
+        ks = gv.knot_scale(fit) if len(lx) >= 2 else None
+        # edges by the fitted model (not the knots), so the scale stays the global fit
+        c = fit["coef"]; f = (lambda x: c[0] + c[1] * x) if fit["kind"] == "linear" else (lambda x: 10 ** (c[0] + c[1] * x))
+        left, right = float(f(-0.5)), float(f(self.width - 0.5))
+        fit.update(left=left, right=right, warnings=gv.check_divisions(fit))
+        if apply:
+            self.set_scale(round(left, 6), round(right, 6), fit["kind"], backup=sc_["backup"], wrap_side=sc_["wrap_side"])
+        self.grid_fit = fit
+        return fit
 
     # ------------------------------------------------------------------ tracing
     def _need_section(self):

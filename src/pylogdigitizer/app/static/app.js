@@ -402,6 +402,10 @@ R.scale = () => {
     <div class="row"><button id="sReset">Reset to preset</button></div>
     <h3>From two grid lines</h3><div class="note">Panel x (px from the left track edge) and the value there. Grid lines at x: <span id="gX">…</span></div>
     <div class="row"><input type="number" id="p1x" placeholder="x1"><input type="number" id="p1v" placeholder="value 1"><input type="number" id="p2x" placeholder="x2"><input type="number" id="p2v" placeholder="value 2"><button id="p2Apply">Fit</button></div>
+    <h3>Grid lines</h3><div class="note">Straighten bent grid lines, then every line gets a value from two or more labels. Edit any value and press Fit values; labels that disagree turn red.</div>
+    <div class="row"><button id="gDetect">Straighten grid</button><button id="gOff">Undo straightening</button><button id="gVals">Fit values</button><label><input type="checkbox" id="gEdit"> drag grid nodes</label></div>
+    <div id="gTable" class="note"></div><div id="gWarn" class="note"></div>
+    <div id="gEditor" style="display:none"><canvas id="gCanvas" style="border:1px solid #888;cursor:crosshair"></canvas><img id="gPrev" style="border:1px solid #888;margin-left:6px"></div>
     <div class="card">Applied: ${s.left} → ${s.right} ${s.type}${s.backup ? `, backup ${s.backup[0]} → ${s.backup[1]} (${s.wrap_side})` : ""} · wraps found: ${ST.n_wraps ?? "–"}</div>
     ${KEYS("Applying only re-maps values (no re-trace)", "<b>wraps on</b>: the edge the curve leaves through (GR: right; DT 100→40: left)", "<kbd>Z</kbd> undoes")}`;
   if (v) dirty(true);
@@ -410,6 +414,46 @@ R.scale = () => {
   api("GET", A("/calib")).then(c => { const g = $("gX"); if (g) g.textContent = (c.grid_x || []).map(x => x.toFixed(0)).join(", ") || "none found"; }).catch(() => {});
   on("p2Apply", async () => { const r = await api("POST", A("/calib/scale2"), {x1: +$("p1x").value, v1: +$("p1v").value, x2: +$("p2x").value, v2: +$("p2v").value, type: $("sT").value});
     toast(`scale ${fmt(r.left, 3)} → ${fmt(r.right, 3)}`); await refresh(); render(false); });
+  const gridShow = g => {
+    const t = $("gTable"); if (!t) return;
+    const lines = g.lattice ? g.lattice.u : (g.fit ? g.fit.line_x : []);
+    const vals = g.fit ? g.fit.values : [];
+    const bad = new Set((g.fit?.outliers || []).map(o => Math.round(o.x)));
+    t.innerHTML = lines.length ? lines.map((x, k) => `<span style="display:inline-block;margin:2px;${bad.has(Math.round(x)) ? "color:#c00" : ""}">x ${x.toFixed(0)}<br><input class="gv" data-x="${x}" type="number" style="width:5em" value="${vals[k] ?? ""}"></span>`).join("")
+      : "No straightened grid yet.";
+    $("gWarn").textContent = (g.fit?.warnings || []).join(" · ");
+  };
+  const gridLoad = async () => { const g = await api("GET", A("/grid")); gridShow(g); return g; };
+  gridLoad().catch(() => {});
+  on("gDetect", async () => { await runJob(A("/grid/detect"), {}, "straighten grid"); await api("POST", A("/grid/values"), {}); const g = await gridLoad();
+    toast(`grid straightened: ${g.lattice ? g.lattice.u.length : 0} lines`); await refresh(); render(false); });
+  on("gOff", async () => { await api("POST", A("/grid/off")); await gridLoad(); await refresh(); render(false); });
+  on("gVals", async () => {
+    const labels = [...document.querySelectorAll(".gv")].filter(i => i.value !== "" && i.dataset.edited).map(i => [+i.dataset.x, +i.value]);
+    const all = [...document.querySelectorAll(".gv")].filter(i => i.value !== "").map(i => [+i.dataset.x, +i.value]);
+    const r = await api("POST", A("/grid/values"), {labels: labels.length >= 2 ? labels : all, kind: $("sT").value});
+    toast(`scale ${fmt(r.left, 3)} → ${fmt(r.right, 3)} ${r.kind}`); await refresh(); render(false); });
+  document.addEventListener("input", ev => { if (ev.target.classList?.contains("gv")) ev.target.dataset.edited = "1"; });
+  on("gEdit", async () => {                  // node editor: drag a lattice node, see the straightened preview live
+    const box = $("gEditor"); box.style.display = $("gEdit").checked ? "block" : "none"; if (!$("gEdit").checked) return;
+    const g = await gridLoad(); if (!g.lattice) { toast("straighten the grid first"); return; }
+    const L = g.lattice, cv = $("gCanvas"), H = Math.min(g.rows, 1500), sc = Math.min(1, 500 / H);
+    cv.width = g.width * sc; cv.height = H * sc; const ctx = cv.getContext("2d");
+    let drag = null, X = L.X.map(r => r.slice()), Y = L.Y.map(r => r.slice());
+    const draw = () => { ctx.clearRect(0, 0, cv.width, cv.height); ctx.strokeStyle = "#08f";
+      for (let i = 0; i < X.length; i++) for (let j = 0; j < X[0].length; j++) if (Y[i][j] < H) { ctx.strokeRect(X[i][j] * sc - 3, Y[i][j] * sc - 3, 6, 6); } };
+    const prev = async (i, j, x, y) => { const r = await api("POST", A("/grid/preview"), i == null ? {rows: [0, H]} : {i, j, x, y, radius: 1, rows: [0, H]});
+      $("gPrev").src = r.png; $("gPrev").style.height = cv.height + "px"; };
+    draw(); prev();
+    cv.onmousedown = ev => { const x = ev.offsetX / sc, y = ev.offsetY / sc; let best = 1e9;
+      for (let i = 0; i < X.length; i++) for (let j = 0; j < X[0].length; j++) { const d = Math.hypot(X[i][j] - x, Y[i][j] - y); if (d < best) { best = d; drag = [i, j]; } }
+      if (best > 15 / sc) drag = null; };
+    let pend = null;
+    cv.onmousemove = ev => { if (!drag) return; const [i, j] = drag; X[i][j] = ev.offsetX / sc; Y[i][j] = ev.offsetY / sc; draw();
+      clearTimeout(pend); pend = setTimeout(() => prev(i, j, X[i][j], Y[i][j]), 80); };
+    cv.onmouseup = async () => { if (!drag) return; const [i, j] = drag; drag = null;
+      await runJob(A("/grid/node"), {i, j, x: X[i][j], y: Y[i][j], radius: 1}, "grid node"); await refresh(); toast("grid node moved"); };
+  });
   on("sReset", async () => { const i = ST.initial_scale; await apply({left: i.left, right: i.right, type: i.type, backup: i.backup, wrap_side: i.wrap_side, use_hatch: i.use_hatch}); render(); });
   main("Apply scale — continue", async () => {
     const bk = $("bL").value !== "" && $("bR").value !== "" ? [+$("bL").value, +$("bR").value] : null;

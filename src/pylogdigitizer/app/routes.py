@@ -29,7 +29,7 @@ EXPECTED = (SessionError, CalibrationError, LayoutError, ValueError, FileNotFoun
 SNAP_ATTRS = ("dm", "depth_anchors", "depth_checks", "depth_source", "section", "pan", "width", "_prob_map", "anchors",
               "excluded", "excluded_ids", "anchor_window_ft", "backup_intervals", "values", "wraps", "scale", "track",
               "trace_kw", "first_depth", "label_interval", "errors", "depth_section", "depth_sections",
-              "strokes", "decisions", "change_log", "_spots")
+              "strokes", "decisions", "change_log", "_spots", "grid_lattice", "_pan_raw", "grid_fit")
 # editor routes that write files: blocked in the app (the Export step is the only writer)
 BLOCKED = re.compile(r"^/core/api/sessions/[^/]+/(export_las|download_las|save_training|save_session|qc\.png)")
 MUTATING = re.compile(r"^/core/api/sessions/([^/]+)/(section|depth|scale|trace|anchors.*|retrace_all|exclude.*|backup_interval.*)$")
@@ -395,6 +395,75 @@ def install(app, root: Path, runner) -> None:
         l, r = locked(e, lambda s: s.scale_from_points(float(body["x1"]), float(body["v1"]), float(body["x2"]), float(body["v2"]),
                                                        body.get("type", "linear")))
         return _clean(dict(left=l, right=r))
+
+    # ---------------- grid: straighten (rectify) the section, edit the lattice, value every grid line
+    def _grid(s, window=None):
+        lat = getattr(s, "grid_lattice", None)
+        return dict(rectified=lat is not None, lattice=lat.to_dict() if lat is not None else None,
+                    fit=getattr(s, "grid_fit", None), width=s.width, rows=s.pan.shape[0] if s.pan is not None else 0)
+
+    @app.get("/app/api/{sid}/grid")
+    def grid_get(sid: str):
+        return _clean(locked(get(sid), _grid))
+
+    @app.post("/app/api/{sid}/grid/detect")
+    def grid_detect(sid: str, body: dict = Body(default={})):
+        """Detect and straighten the grid of the current section, then re-trace (job)."""
+        e = get(sid); push_undo(e, "straighten grid")
+        def work(j):
+            j.progress(0, 2, "finding grid lines"); info = e.s.rectify_grid(lattice=body.get("lattice"))
+            j.progress(1, 2, "tracing in the straightened panel"); e.s.auto_trace(); return _clean(info)
+        return job(e, "Straighten grid", work)
+
+    @app.post("/app/api/{sid}/grid/off")
+    def grid_off(sid: str):
+        e = get(sid); push_undo(e, "unstraighten grid")
+        def f(s):
+            s.unrectify_grid(); s.auto_trace(); return _grid(s)
+        return _clean(locked(e, f))
+
+    @app.post("/app/api/{sid}/grid/preview")
+    def grid_preview(sid: str, body: dict = Body(...)):
+        """{i, j, x, y, radius, rows:[r0, r1]}: move lattice node (i, j) to raw-panel (x, y) and return the
+        straightened window as a PNG data URL (nothing is committed). Without i/j: the current lattice."""
+        import base64, io
+        from PIL import Image
+        from pylogdigitizer import grid_rectify as gr
+        e = get(sid)
+        def f(s):
+            lat = getattr(s, "grid_lattice", None)
+            if lat is None:
+                raise HTTPException(400, "straighten the grid first")
+            if body.get("i") is not None:
+                lat = lat.move_node(int(body["i"]), int(body["j"]), float(body["x"]), float(body["y"]), int(body.get("radius", 1)))
+            raw = s._pan_raw; r0, r1 = body.get("rows") or (0, min(raw.shape[0], 1500))
+            r0, r1 = int(max(0, r0)), int(min(raw.shape[0], r1))
+            im = gr.rectify_image(raw, lat, raw.shape, window=(r0, r1, 0, raw.shape[1]))
+            buf = io.BytesIO(); Image.fromarray(np.where(im, 0, 255).astype(np.uint8)).save(buf, "PNG")
+            return dict(png="data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(), rows=[r0, r1],
+                        lattice=lat.to_dict())
+        return _clean(locked(e, f))
+
+    @app.post("/app/api/{sid}/grid/node")
+    def grid_node(sid: str, body: dict = Body(...)):
+        """{i, j, x, y, radius}: commit a node drag (raw-panel px), re-cut and re-trace (job)."""
+        e = get(sid); push_undo(e, "grid node")
+        def work(j):
+            lat = e.s.grid_lattice
+            if lat is None:
+                raise HTTPException(400, "straighten the grid first")
+            lat = lat.move_node(int(body["i"]), int(body["j"]), float(body["x"]), float(body["y"]), int(body.get("radius", 1)))
+            e.s.rectify_grid(lattice=lat); e.s.auto_trace(); return dict(ok=True)
+        return job(e, "Grid node", work)
+
+    @app.post("/app/api/{sid}/grid/values")
+    def grid_values(sid: str, body: dict = Body(default={})):
+        """{labels:[[panel_x, value], ..], kind, apply}: value every grid line, flag labels that disagree,
+        and (apply) set the track scale from the fit. No labels: values implied by the current scale."""
+        e = get(sid)
+        if body.get("apply", True):
+            push_undo(e, "grid values")
+        return _clean(locked(e, lambda s: s.grid_values(body.get("labels"), body.get("kind"), bool(body.get("apply", True)))))
 
     # ---------------- step 7: trace modes (job)
     @app.post("/app/api/{sid}/trace")

@@ -32,7 +32,7 @@ def run_one(job: dict, use_ocr: bool, q):
     row.update(well=job["well"], scan=job["scan"], curve=job["curve"], scale_source=job.get("scale_source", ""))
     t0 = time.time()
     try:
-        kw = {k: job[k] for k in ("track", "backup", "wrap_side", "use_hatch", "scale_type", "first_depth") if k in job}
+        kw = {k: job[k] for k in ("track", "backup", "wrap_side", "use_hatch", "scale_type", "first_depth", "grid_rectify") if k in job}
         kw.update(job.get("trace", {}) or {})
         df = read_las(job["las_path"]).df()
         ref = df[job["curve"]].dropna()
@@ -106,11 +106,14 @@ def main(argv=None):
     ap.add_argument("--no-ocr", action="store_true"); ap.add_argument("--ocr-engine", default="auto", help="auto | rapidocr | none")
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--out", default=str(ROOT / "outputs" / "qc" / "regression_metrics.csv"))
+    ap.add_argument("--grid-rectify", action="store_true", help="straighten grid lines inside the track before tracing")
     ap.add_argument("--save-traces", default=None, help="directory: save each digitized trace as .npz (depth, value)")
     a = ap.parse_args(argv)
     jobs = jobs_from_config(pathlib.Path(a.config), a.wells, a.only)
     for j in jobs:
         j["save_dir"] = a.save_traces
+        if a.grid_rectify:
+            j["grid_rectify"] = True
     if a.trace:
         import json
         for j in jobs:
