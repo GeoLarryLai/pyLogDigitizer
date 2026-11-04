@@ -179,6 +179,8 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         pan, lat = gr.rectify_panel(pan)
         checks["grid_lines"] = 0 if lat is None else int(lat.X.shape[1])
     nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "auto")
+    if nc <= 1:
+        trace_kw.pop("pick_margin", None)   # multi-curve only
     if nc > 1:      # several curves in the track (e.g. GR + caliper): trace each, keep ``pick``
         T = ct.trace_multi(pan, r0, n_curves=nc, pick=pick, px_per_ft=dm.px_per_ft, **trace_kw)
         checks["curves_traced"] = len(T["candidates"]); checks["curve_picked"] = T["picked"]

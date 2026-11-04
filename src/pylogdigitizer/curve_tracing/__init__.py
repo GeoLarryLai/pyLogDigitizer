@@ -784,7 +784,8 @@ def auto_pick_score(f: dict) -> float:
 
 def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "auto",
                 min_on_ink: float = 0.4, cross: bool = True, style: bool = True,
-                legend: list | None = None, legend_target: int = 0, **kw) -> dict:
+                legend: list | None = None, legend_target: int = 0, pick_margin: float = 0.0,
+                **kw) -> dict:
     """Trace up to ``n_curves`` curves sharing a track: each pass treats the curves already traced
     as used ink (``avoid_cost`` 0.97 by default: a later pass must find other ink, so candidates are
     distinct curves, or the pass is dropped). ``pick``: an index (0 = strongest), "rough" (most
@@ -792,7 +793,9 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
     only when at least ``min_on_ink`` of its samples are on ink. ``style``: after the crossing
     untangle, re-assign segments by stroke width (:func:`restyle_segments`). ``legend``: line
     styles read from the track header (header_legend.legend_styles); with ``pick="legend"`` the
-    candidate closest to entry ``legend_target`` is returned. The returned trace dict carries
+    candidate closest to entry ``legend_target`` is returned. ``pick_margin``: with
+    pick="auto", a later candidate replaces the first (strongest, cheapest) pass only when its
+    auto score is higher by more than this margin (0 = plain argmax). The returned trace dict carries
     ``candidates`` (all traces, each with ``style``) and ``picked``."""
     kw.setdefault("avoid_cost", 0.97)
     # edge-snap guard: parking off-scale must cost more than crossing ink a pass may not follow
@@ -848,7 +851,10 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
     elif pick == "rough":
         i = int(np.argmax([t["roughness"] for t in Ts]))
     else:   # "auto"
-        i = int(np.argmax([t["score"] for t in Ts]))
+        sc = [t["score"] for t in Ts]
+        i = int(np.argmax(sc))
+        if i != 0 and sc[i] <= sc[0] + float(pick_margin):
+            i = 0
     T = Ts[i]
     T["candidates"] = Ts; T["picked"] = i
     return T

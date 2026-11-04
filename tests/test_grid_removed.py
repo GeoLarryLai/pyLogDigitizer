@@ -62,3 +62,15 @@ def test_remove_grid_seg_mode_with_given_prob():
     out = sep.remove_grid(ink, prob=(pc, pg))
     assert out[r, x].mean() > 0.99
     assert not out[300:303, 10:25].any()
+
+
+def test_trace_multi_pick_margin_keeps_first_pass():
+    ink, x = _panel()
+    r = np.arange(len(x))
+    x2 = np.clip(x + 70, 0, ink.shape[1] - 1)
+    ink[r, x2] = True                                   # thin companion curve
+    T0 = ct.trace_multi(ink, 0, n_curves=2, px_per_ft=10, grid_removed=True)
+    T1 = ct.trace_multi(ink, 0, n_curves=2, px_per_ft=10, grid_removed=True, pick_margin=1e9)
+    assert T1["picked"] == 0
+    sc = [t["score"] for t in T0["candidates"]]
+    assert T0["picked"] == int(np.argmax(sc))
