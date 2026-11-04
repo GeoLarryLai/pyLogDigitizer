@@ -981,3 +981,279 @@ def depth_range_warning(top: float, base: float, header: dict, tol_ft: float = 1
         return (f"The traced depths ({top:.0f}-{base:.0f} ft) are above the logged interval written in the "
                 f"header ({ht:.0f}-{hb:.0f} ft). Check the depth numbers.")
     return None
+
+
+# ----------------------------------------------------------------------------- scale-end labels
+def _grid_starts(tink: np.ndarray, min_lines: int = 4, min_run: int = 300) -> list[int]:
+    """Rows where a track's vertical grid begins (header -> log transitions), top to bottom."""
+    import cv2
+    v = cv2.morphologyEx(tink.astype(np.uint8), cv2.MORPH_OPEN, np.ones((101, 1), np.uint8))
+    cols = (np.diff(np.pad(v, ((0, 0), (1, 0))), axis=1) > 0).sum(axis=1)       # line starts per row
+    g = cols >= min_lines
+    out, y, h = [], 0, len(g)
+    while y < h:
+        if g[y] and (y == 0 or not g[max(0, y - 1)]):
+            e = y
+            while e < h and g[e]:
+                e += 1
+            if e - y >= min_run:
+                out.append(y)
+            y = e
+        else:
+            y += 1
+    return out
+
+
+def _scale_lines(band: np.ndarray, frac: float = 0.5) -> list[tuple[int, int]]:
+    import cv2
+    w = band.shape[1]
+    r = cv2.morphologyEx(band.astype(np.uint8), cv2.MORPH_OPEN, np.ones((1, max(15, w // 4)), np.uint8))
+    rows = np.flatnonzero(r.mean(axis=1) >= frac)
+    if not len(rows):
+        return []
+    return [(int(b[0]), int(b[-1]) + 1) for b in np.split(rows, np.flatnonzero(np.diff(rows) > 1) + 1)]
+
+
+def _end_number(crop: np.ndarray, side: str, backend=None, target_h: int = 48, variants: list | None = None,
+                despeckle: bool = False):
+    """Number nearest the given end of a label strip, with its OCR confidence (0-1).
+
+    Scale-end labels are tiny (8-12 px) and often touch the track border, so detection-based OCR
+    fragments them: the border columns are cleared, character blobs are grouped into words, the
+    word nearest the end is cropped tight, smoothed, upscaled to ``target_h`` px and recognised
+    as one line (RapidOCR recognition only)."""
+    import cv2
+    from pylogdigitizer import ocr_engines
+    if not crop.size or not crop.any():
+        return None, 0.0
+    c = crop.copy()
+    bcols = np.flatnonzero(c.mean(axis=0) > 0.85)
+    c[:, bcols] = False                                   # track border / tick columns
+    c[c.mean(axis=1) > 0.6, :] = False                    # remnant of the scale line
+    n, lab, st, _ = cv2.connectedComponentsWithStats(c.astype(np.uint8), connectivity=8)
+    hgt = c.shape[0]
+    blobs = [tuple(st[i, :4]) for i in range(1, n) if st[i, 4] >= 4 and 3 <= st[i, 3] <= 0.95 * hgt]
+    if not blobs:
+        return None, 0.0
+    blobs.sort(key=lambda t: t[0])
+    ch = float(np.median([t[3] for t in blobs]))
+    gap = 0.9
+    if despeckle:   # second reading: drop dotted-line speckle (shorter than digits), wider letter gaps
+        big = max(t[3] for t in blobs)
+        blobs = [t for t in blobs if t[3] >= 0.55 * big]
+        ch = float(np.median([t[3] for t in blobs]))
+        keep = np.zeros_like(c)
+        for i in range(1, n):
+            if tuple(st[i, :4]) in blobs:
+                keep |= lab == i
+        c = keep
+        gap = 1.6
+    groups, cur = [], [blobs[0]]
+    for t in blobs[1:]:
+        if t[0] - max(u[0] + u[2] for u in cur) <= gap * ch:
+            cur.append(t)
+        else:
+            groups.append(cur); cur = [t]
+    groups.append(cur)
+    groups = [g for g in groups if max(u[3] for u in g) >= 0.6 * ch]
+    if not groups:
+        return None, 0.0
+    best = None
+    for g in (groups if side == "left" else groups[::-1])[:2]:
+        x0 = min(u[0] for u in g); x1 = max(u[0] + u[2] for u in g)
+        y0 = min(u[1] for u in g); y1 = max(u[1] + u[3] for u in g)
+        word = c[max(0, y0 - 1):y1 + 1, max(0, x0 - 1):x1 + 1]
+        img = np.where(word, 0, 255).astype(np.uint8)
+        f = target_h / max(1, img.shape[0])
+        img = cv2.resize(cv2.GaussianBlur(img, (3, 3), 0), None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+        img = np.pad(img, 12, constant_values=255)
+        txt, conf = ocr_engines.rapid_line(img)
+        v = parse_number(txt)
+        if v is not None:
+            if variants is not None:
+                # border-fused digits: a leading "1" lost into the left border, or the right border
+                # read as a trailing "1" -> extra readings, used only when they make the pair join
+                near = (np.any(np.abs(bcols - x0) <= 3) or x0 <= 1) if side == "left" else \
+                       (np.any(np.abs(bcols - x1) <= 3) or x1 >= c.shape[1] - 1)
+                d = re.sub(r"[^0-9.\-]", "", txt.translate(str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "|": "1"})))
+                if near and d:
+                    if side == "left" and not d.startswith("-"):
+                        w = parse_number("1" + d)
+                        if w is not None:
+                            variants.append((w, conf * 0.85))
+                    if side == "right" and d.endswith("1") and len(d) >= 3:
+                        w = parse_number(d[:-1])
+                        if w is not None:
+                            variants.append((w, conf * 0.85))
+            return v, conf
+        if best is None:
+            best = (None, 0.0)
+    return best
+
+
+def _join(p, q):
+    """q is a backup of p (shares an end), allowing for a last digit clipped by the track border
+    (16 -> 160) and a misread last digit of the far end (321 -> 320 when spans then match 1x/2x).
+    Returns the corrected (primary, backup) or None."""
+    pl, pr, ql, qr = p["left"], p["right"], q["left"], q["right"]
+    for cand_pr in (pr, pr * 10):
+        if ql == cand_pr:
+            span = abs(cand_pr - pl)
+            qr2 = None
+            for k in (1, 2):
+                tgt = ql + k * (cand_pr - pl)
+                if abs(qr - tgt) <= 0.02 * span + 1e-9 or abs(qr * 10 - tgt) <= 0.02 * span:
+                    qr2 = tgt
+            if qr2 is None or span == 0:      # a backup continues the scale with 1x or 2x its span
+                continue
+            return (pl, cand_pr), (ql, qr2), (cand_pr != pr or qr2 != qr)
+    return None
+
+
+def _plausible_pair(L, R, conf) -> bool:
+    """Reject OCR junk: low confidence, a lone border remnant read as '1', non-round ends."""
+    if conf < 0.4:
+        return False
+    if 1.0 in (L, R) and conf < 0.9:
+        return False
+    return _nice_number(L) and _nice_number(R) and abs(R - L) >= 1
+
+
+def _nice_number(v) -> bool:
+    v = abs(float(v))
+    return v == 0 or any(abs(v / m - round(v / m)) < 1e-9 for m in (5, 10, 0.1, 0.2, 0.5, 1)) and len(f"{v:g}") <= 5
+
+
+def read_scale_ends(ink: np.ndarray, xl: float, xr: float, backend="auto", search: int | None = None,
+                    max_sections: int = 4) -> dict:
+    """Read the scale-end labels printed just above a track's grid: for every scale line in the
+    header band above each grid start, the label words at its left and right ends are cropped,
+    upscaled and recognised. Returns {scale, backup, confidence, reason, rows, readings}.
+
+    confidence: 'high' = a primary pair and a backup pair that joins it (shared end) were read, or
+    one pair with OCR confidence >= 0.9 and nice round ends; 'corrected' = joined after fixing a
+    border-clipped / misread last digit (logged in reason); 'low' = anything else -> manual fix
+    (scale None is never replaced by a guess here)."""
+    if backend in (None, "auto"):
+        from pylogdigitizer import ocr_engines
+        backend = ocr_engines.resolve("auto")
+    xl, xr = int(xl), int(xr)
+    W = xr - xl
+    m = max(8, int(0.1 * W))
+    a, b = max(0, xl - m), min(ink.shape[1], xr + m)
+    tink = ink[:, xl:xr]
+    search = search or int(2.0 * W)
+    H = max(14, int(0.07 * W))
+    reasons, singles = [], []
+    for g in _grid_starts(tink)[:max_sections]:
+        top = max(0, g - search)
+        if g - top < 10:
+            continue
+        band = ink[top:g, a:b]
+        lines = _scale_lines(band[:, xl - a: xr - a])
+        pairs, prev_end = [], 0
+        for la, le in lines:
+            strip = band[max(prev_end, la - H):la].copy()
+            prev_end = le
+            if strip.shape[0] < 6:
+                continue
+            sw = strip.shape[1]
+            for ds in (False, True):
+                vl, vr = [], []
+                L, cl = _end_number(strip[:, : int(0.4 * sw)], "left", backend, variants=vl, despeckle=ds)
+                R, cr = _end_number(strip[:, int(0.6 * sw):], "right", backend, variants=vr, despeckle=ds)
+                if L is not None and R is not None and L != R and _plausible_pair(L, R, min(cl, cr)):
+                    pairs.append(dict(left=L, right=R, conf=min(cl, cr), row=top + la, variant=ds))
+                if L is not None and R is not None:
+                    for (L2, c2), (R2, c3) in [(a2, (R, cr)) for a2 in vl] + [((L, cl), b2) for b2 in vr] \
+                            + [(a2, b2) for a2 in vl for b2 in vr]:
+                        if L2 != R2 and _plausible_pair(L2, R2, min(c2, c3)):
+                            pairs.append(dict(left=L2, right=R2, conf=min(c2, c3), row=top + la, variant=True))
+        best = None
+        for i, p in enumerate(pairs):
+            for q in pairs[i + 1:]:
+                if q["row"] == p["row"]:
+                    continue
+                j = _join(p, q)
+                if j:
+                    (pl, pr), bk, fixed = j
+                    var = p.get("variant", False) or q.get("variant", False)
+                    sc = min(p["conf"], q["conf"]) * (0.8 if fixed else 1.0) * (0.85 if var else 1.0)
+                    if best is None or sc > best[0]:
+                        best = (sc, p, q, pl, pr, bk, fixed or var)
+        if best:
+            _, p, q, pl, pr, bk, fixed = best
+            if True:
+                if True:
+                    return dict(scale=(pl, pr), backup=bk, confidence="corrected" if fixed else "high",
+                                reason=("last digit corrected from the joining backup pair; " if fixed else "")
+                                + f"read {p['left']:g}-{p['right']:g} / {q['left']:g}-{q['right']:g} at rows {p['row']}, {q['row']}",
+                                rows=(top, g), readings=pairs)
+        singles += pairs
+        if not pairs:
+            reasons.append(f"grid at row {g}: no scale-end pair read")
+    good = [p for p in singles if not p.get("variant") and p["conf"] >= 0.9 and _nice_number(p["left"]) and _nice_number(p["right"])]
+    if len(good) == 1:
+        p = good[0]
+        return dict(scale=(p["left"], p["right"]), backup=None, confidence="high", reason="single pair, no backup",
+                    rows=None, readings=singles)
+    if singles:
+        reasons.append("ambiguous/unjoined pairs: " + ", ".join(f"{p['left']:g}-{p['right']:g}" for p in singles[:6]))
+    return dict(scale=None, backup=None, confidence="low", reason="; ".join(reasons) or "no grid start found",
+                rows=None, readings=singles)
+
+
+def read_track_scales(source, max_rows: int = 20000, backend="auto") -> dict:
+    """{track name: read_scale_ends(...)} for every curve track of a scan."""
+    from pylogdigitizer import track_grid_detection as tgd
+    ink = source if isinstance(source, np.ndarray) else _load_top(source, max_rows)
+    probe, tracks = tgd.find_probe(ink, 800)
+    out, k = {}, 0
+    for t in tracks:
+        if t["kind"] != "track":
+            continue
+        k += 1
+        out[f"track{k}"] = read_scale_ends(ink, float(t["grid_x"][0]), float(t["grid_x"][-1]), backend)
+    return out
+
+
+# ----------------------------------------------------------------------------- legend line styles
+def legend_styles(ink: np.ndarray, xl: float, xr: float, search: int | None = None, max_sections: int = 2) -> list[dict]:
+    """Line-style samples drawn in a track's header legend (one short line per curve: solid /
+    dashed / dotted, thin / heavy), top to bottom: [{row, x0, x1, width (stroke thickness px),
+    ink (share of the sample's length inked), dashed, dash_period}]. len() = number of curves the
+    legend shows (0 = no legend found: callers fall back to auto-detect)."""
+    import cv2
+    xl, xr = int(xl), int(xr); W = xr - xl
+    tink = ink[:, xl:xr]
+    search = search or int(2.0 * W)
+    out = []
+    for g in _grid_starts(tink)[:max_sections]:
+        top = max(0, g - search)
+        band = tink[top:g].astype(np.uint8)
+        if band.shape[0] < 10:
+            continue
+        full = _scale_lines(band.astype(bool), 0.5)
+        fm = np.zeros(band.shape[0], bool)
+        for a, e in full:
+            fm[max(0, a - 1):e + 1] = True
+        # close dash gaps along x, then keep long thin horizontal components
+        closed = cv2.morphologyEx(band, cv2.MORPH_CLOSE, np.ones((1, max(3, W // 40)), np.uint8))
+        closed[fm] = 0
+        n, lab, st, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, area = st[i]
+            if w < 0.12 * W or w > 0.9 * W or h > 8 or x <= 1 or x + w >= W - 1:
+                continue
+            seg = band[y:y + h, x:x + w].astype(bool)
+            prof = seg.any(axis=0)
+            inkf = float(prof.mean())
+            th = float(np.median(seg.sum(axis=0)[prof])) if prof.any() else 0.0
+            gaps = np.flatnonzero(np.diff(prof.astype(np.int8)) == 1)
+            period = float(np.median(np.diff(gaps))) if len(gaps) >= 3 else 0.0
+            out.append(dict(row=int(top + y), x0=int(xl + x), x1=int(xl + x + w), width=th, ink=inkf,
+                            dashed=inkf < 0.85, dash_period=period))
+        if out:
+            break
+    out.sort(key=lambda d: d["row"])
+    return out
