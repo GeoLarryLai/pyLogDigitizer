@@ -100,7 +100,9 @@ def other_mask(ink: np.ndarray, grid: np.ndarray | None = None, char_h: tuple[in
     ch = np.flatnonzero((h >= char_h[0]) & (h <= char_h[1]) & (w <= 3 * h) & (w >= 2))
     ch = ch[ch > 0]
     if len(ch):
-        o = ch[np.argsort(x[ch])]
+        o = ch[np.argsort(x[ch], kind="stable")]
+        xo = x[o]
+        hmax = int(h[o].max())
         used = set()
         for i in o:   # greedy chains to the right on the same baseline
             if i in used:
@@ -108,7 +110,9 @@ def other_mask(ink: np.ndarray, grid: np.ndarray | None = None, char_h: tuple[in
             chain = [i]
             while True:
                 j0 = chain[-1]; best = None
-                for j in o:
+                lo = np.searchsorted(xo, x[j0] + w[j0] - 2, "left")
+                hi = np.searchsorted(xo, x[j0] + w[j0] + gap * max(h[j0], hmax), "right")
+                for j in o[lo:hi]:
                     if j in used or j in chain:
                         continue
                     dx = x[j] - (x[j0] + w[j0])
