@@ -147,6 +147,91 @@ def classify(ink: np.ndarray, **kw) -> np.ndarray:
     return lab
 
 
+def _runs(row: np.ndarray) -> list:
+    """(start, end-exclusive-1) of True runs in a 1-D bool row."""
+    d = np.diff(np.r_[0, row.astype(np.int8), 0])
+    st, en = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+    return [(int(p), int(q) - 1) for p, q in zip(st, en)]
+
+
+def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_length: int = 301,
+                max_bridge: int = 41, return_masks: bool = False):
+    """Grid-removed ink: what is left for the tracer once the grid lattice is erased.
+
+    Erased: thin vertical / horizontal grid lines (:func:`grid_mask` rules), full-width horizontal
+    bands of any thickness (heavy depth lines, :func:`hline_bands`) and long straight vertical runs
+    of any width (thick reference / bit-size lines, >= ``ref_length`` px). Only pixels whose local
+    stroke runs along the line direction are erased: a curve crossing a line keeps its pixels
+    there, because the gap left in it is bridged by a closing ACROSS the line (vertical closing
+    for horizontal lines, horizontal closing for vertical lines) whose result is put back only on
+    erased pixels. Gaps up to ``max_bridge`` px (thickest band + 1) are bridged.
+    ``return_masks``: also return (h_mask, v_mask, restored)."""
+    import cv2
+    from pylogdigitizer.grid_rectify import line_response
+    ink = np.asarray(ink, bool)
+    u8 = ink.astype(np.uint8)
+    wv = cv2.morphologyEx(u8, cv2.MORPH_OPEN, np.ones((1, max_width + 1), np.uint8)).astype(bool)
+    wh = cv2.morphologyEx(u8, cv2.MORPH_OPEN, np.ones((max_width + 1, 1), np.uint8)).astype(bool)
+    H = line_response(ink, "h", length) & ~wh
+    V = line_response(ink, "v", length) & ~wv
+    bands = hline_bands(ink)
+    hb = 1
+    for a, e in bands:
+        H[a:e] |= ink[a:e]
+        hb = max(hb, e - a)
+    if ref_length and ink.shape[0] >= ref_length:
+        V |= line_response(wv, "v", ref_length, tilt=0) & ink   # thick straight vertical runs only
+    vw = 1
+    if V.any():
+        n, lab, st, _ = cv2.connectedComponentsWithStats(V.astype(np.uint8), connectivity=8)
+        if n > 1:
+            vw = int(min(max_bridge - 1, np.percentile(st[1:, 2], 90)))
+    rest = ink & ~H & ~V
+    kh = min(max_bridge, hb + 2) | 1
+    kv = min(max_bridge, vw + 2) | 1
+    close_v = cv2.morphologyEx(rest.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((kh, 1), np.uint8)).astype(bool)
+    close_h = cv2.morphologyEx(rest.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((1, kv), np.uint8)).astype(bool)
+    restored = (H & close_v) | (V & close_h)
+    # oblique crossings of erased horizontal strips: join stroke runs just above and below the
+    # strip along the curve direction (straight segment, mean run width)
+    rest2 = rest | restored
+    hrow = H.mean(1) > 0.3
+    y = 0
+    n_rows, W = ink.shape
+    while y < n_rows:
+        if not hrow[y]:
+            y += 1
+            continue
+        a = y
+        while y < n_rows and hrow[y]:
+            y += 1
+        e = y
+        if a == 0 or e >= n_rows or e - a > max_bridge:
+            continue
+        up, dn = _runs(rest2[a - 1]), _runs(rest2[e])
+        if not up or not dn:
+            continue
+        h = e - a + 1
+        dcen = np.array([(p + q) / 2 for p, q in dn])
+        for p, q in up:
+            c = (p + q) / 2
+            j = int(np.argmin(np.abs(dcen - c)))
+            if abs(dcen[j] - c) > 2 * h + 6:
+                continue
+            p2, q2 = dn[j]
+            w = max(q - p, q2 - p2) / 2
+            for k, yy in enumerate(range(a, e)):
+                t = (k + 1) / h
+                cc = c + t * (dcen[j] - c)
+                x0, x1 = int(max(0, np.floor(cc - w))), int(min(W, np.ceil(cc + w) + 1))
+                restored[yy, x0:x1] |= ink[yy, x0:x1]
+    # a crossing pixel of both families (curve through a grid node) also counts once both closings agree
+    out = rest | restored
+    if return_masks:
+        return out, H, V, restored
+    return out
+
+
 def curve_layer(ink: np.ndarray, **kw) -> np.ndarray:
     """Ink with 'other' removed (grid kept: the tracer neutralises it and bridges across it)."""
     ink = np.asarray(ink, bool)

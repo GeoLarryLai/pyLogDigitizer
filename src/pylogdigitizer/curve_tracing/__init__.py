@@ -432,7 +432,7 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False,
                 seg: bool | str = False, seg_mix: float = 0.5, avoid_paths: list | None = None,
                 avoid_band: int = 3, avoid_cost: float = 0.6, grid_veto: bool | float = False,
-                line_neutral: float = 0.85, center_weight: float = 0.0) -> dict:
+                line_neutral: float = 0.85, center_weight: float = 0.0, grid_removed: bool = False) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
@@ -447,6 +447,9 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     ``line_neutral``: cost of straight vertical runs and grid columns (crossed, not followed).
     ``center_weight``: extra cost at the edges of thick strokes (0 = off), so the path follows the
     stroke centreline instead of hugging one edge.
+    ``grid_removed``: trace on :func:`separation.remove_grid` ink (grid lattice, depth-line bands and
+    thick reference lines erased, curve gaps at crossings bridged); grid columns and the grid veto
+    are then not needed. The cleaned panel is returned as ``T["traced_panel"]``.
     """
     from pylogdigitizer import track_grid_detection as tgd
     if mask_other:
@@ -471,8 +474,14 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
             T0["params"]["thin_fallback"] = True
             return T0
         return T3
-    vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
-    gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])
+    if grid_removed:
+        from pylogdigitizer.separation import remove_grid
+        panel = remove_grid(panel)
+        gcols = list(exclude_cols or [])
+        grid_veto = False
+    else:
+        vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
+        gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])
     cost_conv, lab = build_cost(panel, gcols, min_width=min_width, fy=fy, fx=fx, min_area=min_area,
                                 straight_len=straight_len, return_labels=True, line_neutral=line_neutral,
                                 center_weight=center_weight)
@@ -572,6 +581,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         T["prob_map"] = prob_map
     from pylogdigitizer.separation import hline_bands, thick_band_anchors
     T["depth_line_rows"] = [row0 + r for r in thick_band_anchors(hline_bands(panel))]   # heavy depth lines
+    if grid_removed:
+        T["traced_panel"] = panel
     T.update(
         labels=lab,
         cost_conv=cost_conv,
