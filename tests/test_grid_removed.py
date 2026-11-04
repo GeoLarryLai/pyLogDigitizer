@@ -50,3 +50,15 @@ def test_remove_grid_erases_dashed_columns():
     for x0 in (60, 240):
         r = np.arange(len(x)); far = np.abs(x - x0) > 8
         assert out[r[far], x0].mean() < 0.01
+
+
+def test_remove_grid_seg_mode_with_given_prob():
+    ink, x = _panel()
+    r = np.arange(len(x))
+    pc = np.zeros(ink.shape, np.float32); pg = np.full(ink.shape, 0.9, np.float32)
+    for dx in range(-2, 3):
+        pc[r, np.clip(x + dx, 0, ink.shape[1] - 1)] = 0.95   # oracle P(curve) on the curve
+    ink[300:303, 10:25] = True                               # short partial-width dash
+    out = sep.remove_grid(ink, prob=(pc, pg))
+    assert out[r, x].mean() > 0.99
+    assert not out[300:303, 10:25].any()

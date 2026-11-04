@@ -154,8 +154,39 @@ def _runs(row: np.ndarray) -> list:
     return [(int(p), int(q) - 1) for p, q in zip(st, en)]
 
 
+def _bridge_along(rest: np.ndarray, cand: np.ndarray, reach: int, sigma: float = 6.0) -> np.ndarray:
+    """Candidate pixels that have ``rest`` ink on BOTH sides along the local stroke direction
+    (structure-tensor orientation of the blurred remaining ink) within ``reach`` px: a gap the
+    curve itself runs through, not a cross-direction closing."""
+    import cv2
+    f = cv2.GaussianBlur(rest.astype(np.float32), (0, 0), 1.5)
+    gx = cv2.Sobel(f, cv2.CV_32F, 1, 0, ksize=3); gy = cv2.Sobel(f, cv2.CV_32F, 0, 1, ksize=3)
+    jxx = cv2.GaussianBlur(gx * gx, (0, 0), sigma); jyy = cv2.GaussianBlur(gy * gy, (0, 0), sigma)
+    jxy = cv2.GaussianBlur(gx * gy, (0, 0), sigma)
+    near = cv2.dilate(rest.astype(np.uint8), np.ones((2 * reach + 1, 2 * reach + 1), np.uint8)).astype(bool)
+    ys, xs = np.nonzero(cand & near)
+    out = np.zeros_like(rest)
+    if not len(ys):
+        return out
+    th = 0.5 * np.arctan2(2 * jxy[ys, xs], jxx[ys, xs] - jyy[ys, xs])   # gradient orientation
+    ty, tx = np.cos(th), -np.sin(th)          # stroke direction = perpendicular to gradient
+    Hh, Ww = rest.shape
+    hit = []
+    for sgn in (1, -1):
+        h = np.zeros(len(ys), bool)
+        for k in range(1, reach + 1):
+            yy = np.clip(np.rint(ys + sgn * k * ty).astype(int), 0, Hh - 1)
+            xx = np.clip(np.rint(xs + sgn * k * tx).astype(int), 0, Ww - 1)
+            h |= rest[yy, xx]
+        hit.append(h)
+    ok = hit[0] & hit[1]
+    out[ys[ok], xs[ok]] = True
+    return out
+
+
 def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_length: int = 301,
-                max_bridge: int = 41, return_masks: bool = False, col_frac: float = 0.3):
+                max_bridge: int = 41, return_masks: bool = False, col_frac: float = 0.3,
+                use_seg: bool = False, short_length: int = 21, curve_thr: float = 0.5, prob=None):
     """Grid-removed ink: what is left for the tracer once the grid lattice is erased.
 
     Erased: thin vertical / horizontal grid lines (:func:`grid_mask` rules), full-width horizontal
@@ -198,6 +229,39 @@ def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_lengt
                 runlen[yy, p_:q_] = q_ - p_
         for x0, x1, w in cols:
             V[:, x0:x1] |= ink[:, x0:x1] & (runlen[:, x0:x1] <= w + 1)
+    if use_seg or prob is not None:
+        # v3: short partial-width horizontal dashes too, then let the seg model protect curve
+        # pixels (on / along grid columns, beside thick reference lines) from the line masks
+        H |= line_response(ink, "h", short_length, tilt=1) & ~wh
+        if prob is None:
+            from pylogdigitizer import segmentation as sgm
+            prob = sgm.get_segmenter().predict(ink)
+            pc, pg = prob[sgm.CURVE], prob[sgm.GRID]
+        else:
+            pc, pg = prob
+        protect = ink & (pc >= curve_thr) & (pc > pg)
+        H &= ~protect
+        V &= ~protect
+        # thick partial-width horizontal lines (heavy depth lines broken by the track edges,
+        # missed by hline_bands): straight runs >= 30% of the width, any thickness <= max_bridge.
+        # Geometry wins over the seg model here; crossings are bridged below.
+        L = max(length, int(0.3 * ink.shape[1]))
+        th = line_response(ink, "h", L, tilt=1)
+        if th.any():
+            tall = cv2.morphologyEx(th.astype(np.uint8), cv2.MORPH_OPEN, np.ones((max_bridge, 1), np.uint8)).astype(bool)
+            H |= th & ~tall
+        rest = ink & ~H & ~V
+        cand = (H | V) & ink
+        restored = np.zeros_like(rest)
+        for _ in range(3):          # grow the bridge from both stroke ends inward
+            add = _bridge_along(rest | restored, cand & ~restored, max_bridge // 2)
+            if not add.any():
+                break
+            restored |= add
+        out = rest | restored
+        if return_masks:
+            return out, H, V, restored
+        return out
     vw = 1
     if V.any():
         n, lab, st, _ = cv2.connectedComponentsWithStats(V.astype(np.uint8), connectivity=8)
