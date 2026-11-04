@@ -940,7 +940,10 @@ class AssistedSession:
             out["candidates"] = []
             for k, t in enumerate(cands):
                 cr = t["rows"][i0:i1:st]; cx = self.panel_to_sheet(cr, t["x"][i0:i1:st])
+                sty = t.get("style") or {}
                 out["candidates"].append(dict(index=k, picked=k == self.T.get("picked"), score=round(float(t.get("score", 0)), 3),
+                                              width=round(float(sty.get("width", 0)), 1), ink=round(float(sty.get("ink", 0)), 2),
+                                              dashed=bool(sty.get("dash_period", 0) > 0 or 0 < sty.get("ink", 1) < 0.7),
                                               trace=[[round(float(a), 1), round(float(b), 1)] for a, b in zip(cr, cx)]))
         out["anchors"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.anchors]
         out["excluded"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.excluded]

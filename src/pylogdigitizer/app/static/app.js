@@ -99,7 +99,7 @@ function draw() {
     c.setLineDash([]); }
   if (["scale", "trace", "checks", "qc", "export"].includes(STEP) && OV) {     // trace: red, off-scale orange, "could go another way" yellow halo
     const dis = (STEP === "trace" || STEP === "checks") ? (CHK?.disagree || []) : [], inDis = r => dis.some(([a, b]) => r >= a && r <= b);
-    if (STEP === "trace") for (const cd of (OV.candidates || [])) { if (cd.picked) continue;    // other curves: dashed
+    if (["trace", "checks", "qc", "export"].includes(STEP)) for (const cd of (OV.candidates || [])) { if (cd.picked) continue;    // other curves of the track: own colour, dashed
       c.strokeStyle = CAND_COL[cd.index % CAND_COL.length]; c.globalAlpha = 0.7; c.lineWidth = 2; c.setLineDash([7, 5]); c.beginPath(); let f = true;
       for (const [r, x] of cd.trace) { if (!vis(r)) { f = true; continue; } const p = P(x, r); f ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y); f = false; }
       c.stroke(); c.setLineDash([]); c.globalAlpha = 1; }
@@ -489,7 +489,7 @@ function renderAnchors() {
 }
 function renderCands() {
   const el = $("candList"); if (!el) return; const cs = OV?.candidates || [];
-  el.innerHTML = cs.length ? cs.map(c => `<div class="item"><span style="color:${CAND_COL[c.index % CAND_COL.length]}">■</span> Curve ${c.index + 1}${c.picked ? " <b>(digitized)</b>" : ""} <span class="muted">score ${fmt(c.score, 2)}</span>
+  el.innerHTML = cs.length ? cs.map(c => `<div class="item"><span style="color:${CAND_COL[c.index % CAND_COL.length]}">■</span> Curve ${c.index + 1}${c.picked ? " <b>(digitized)</b>" : ""} <span class="muted">score ${fmt(c.score, 2)}${c.width ? ` · ${c.width >= 4 ? "heavy" : "thin"} ${c.dashed ? "dashed" : "solid"} (${fmt(c.width, 1)} px)` : ""}</span>
     ${c.picked ? "" : `<button data-pick="${c.index}">Use this curve</button>`}</div>`).join("") : '<span class="muted">one curve traced</span>';
   el.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => { try { await runJob(A("/trace/pick"), {index: +b.dataset.pick}, "pick curve"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} });
 }
