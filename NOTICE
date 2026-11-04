@@ -20,7 +20,7 @@ This product includes third-party software:
 Example data in example_data/ (scans and LAS files from the Kansas Geological Survey) is not
 covered by this license; see example_data/SOURCES.txt for sources and terms.
 
-Python dependencies (NumPy, OpenCV, scikit-image, lasio, FastAPI, uvicorn, ...) are installed
+Python dependencies (NumPy, OpenCV, lasio, FastAPI, uvicorn, ...) are installed
 separately and are under their own licenses.
 
 License compatibility: OpenSeadragon (BSD-3-Clause, notice above and its LICENSE.txt

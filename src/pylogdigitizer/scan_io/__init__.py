@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""scan_io: Load raster/PDF scans of well logs (TIFF via tifffile/Pillow), tiling and downsampling for viewers."""
+"""scan_io: Load raster/PDF scans of well logs (TIFF via Pillow), tiling and downsampling for viewers."""
 
 from __future__ import annotations
 from dataclasses import dataclass

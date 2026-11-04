@@ -12,7 +12,7 @@ import numpy as np
 def binarize(image: np.ndarray, method: str = "otsu", threshold: int | None = None) -> np.ndarray:
     """Grayscale/bilevel image -> boolean ink mask (True = dark).
 
-    method: "otsu" (global), "fixed" (``threshold``, default 128) or "sauvola" (local, skimage).
+    method: "otsu" (global), "fixed" (``threshold``, default 128) or "sauvola" (local).
     Bilevel (bool) input is returned as ``~image`` when it is a PIL '1' array (True = white).
     """
     if image.dtype == bool:
@@ -25,9 +25,23 @@ def binarize(image: np.ndarray, method: str = "otsu", threshold: int | None = No
         t, _ = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         return img <= t  # OpenCV puts values <= t in the dark class
     if method == "sauvola":
-        from skimage.filters import threshold_sauvola
         return img < threshold_sauvola(img, window_size=31)
     raise ValueError(method)
+
+
+def threshold_sauvola(image: np.ndarray, window_size: int = 15, k: float = 0.2, r: float | None = None) -> np.ndarray:
+    """Sauvola & Pietikainen (2000) local threshold T = m * (1 + k * (s / r - 1)), m / s = local mean /
+    std over a ``window_size`` square (reflected borders), r = half the image's value range by
+    default. Written from the paper's formula (box filters), matching the usual implementation."""
+    import cv2
+    img = np.asarray(image, np.float64)
+    w = (int(window_size), int(window_size))
+    m = cv2.boxFilter(img, cv2.CV_64F, w, borderType=cv2.BORDER_REFLECT_101)
+    m2 = cv2.boxFilter(img * img, cv2.CV_64F, w, borderType=cv2.BORDER_REFLECT_101)
+    sd = np.sqrt(np.clip(m2 - m * m, 0, None))
+    if r is None:
+        r = 0.5 * (img.max() - img.min())
+    return m * (1 + k * ((sd / r) - 1))
 
 
 def estimate_skew(ink: np.ndarray, max_angle: float = 2.0, step: float = 0.05, sample_rows: int = 4000) -> float:
