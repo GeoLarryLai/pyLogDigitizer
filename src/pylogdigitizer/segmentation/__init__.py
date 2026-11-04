@@ -58,6 +58,10 @@ def render_synthetic(H: int = 384, W: int = 256, seed: int | None = None) -> tup
         t = int(rng.integers(2, 7)) if k % 5 == 0 else int(rng.integers(1, 3))
         cv2.line(g, (0, int(y)), (W - 1, int(y + rng.uniform(-2, 2))), 255, t)
         y += sp; k += 1
+    if rng.random() < 0.35:    # thick straight reference lines (track centre, bit size, offset lines)
+        for _ in range(int(rng.integers(1, 3))):
+            xr = rng.uniform(0, W); a0 = int(rng.integers(0, H // 2)) if rng.random() < 0.4 else 0
+            cv2.line(g, (int(xr), a0), (int(xr + rng.uniform(-2, 2)), H - 1), 255, int(rng.integers(3, 10)))
     if rng.random() < 0.7:     # broken / faded grid
         g[rng.random((H, W)) < rng.uniform(0, 0.25)] = 0
     draw(g, GRID)
