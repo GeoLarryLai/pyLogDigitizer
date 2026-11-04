@@ -120,6 +120,8 @@ def jobs_from_config(cfg_path: pathlib.Path, wells=None, curves=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--trace", default=None, help="JSON dict of trace_track overrides applied to every job")
+    ap.add_argument("--trace-by-curve", default=None,
+                    help='JSON {curve prefix: overrides}, e.g. {"GR": {"center_weight": 0.15}}; applied after --trace')
     ap.add_argument("--config", default=str(ROOT / "dataset_profiles" / "kansas_kgs_wells.yaml"))
     ap.add_argument("--wells", nargs="*"); ap.add_argument("--only", nargs="*", help="curves, e.g. GR DT ILD")
     ap.add_argument("--no-ocr", action="store_true"); ap.add_argument("--ocr-engine", default="auto", help="auto | rapidocr | none")
@@ -162,6 +164,13 @@ def main(argv=None):
         import json
         for j in jobs:
             j["trace"] = {**(j.get("trace") or {}), **json.loads(a.trace)}
+    if a.trace_by_curve:
+        import json
+        tb = json.loads(a.trace_by_curve)
+        for j in jobs:
+            for pre, ov in tb.items():
+                if j["curve"].upper().startswith(pre.upper()):
+                    j["trace"] = {**(j.get("trace") or {}), **ov}
     rows = []
     ctx = mp.get_context("spawn")
     for j in jobs:
