@@ -390,7 +390,11 @@ class AssistedSession:
         tkw = dict(self.trace_kw)
         if self._prob_map is not None and tkw.get("cost_mode", "conventional") != "conventional":
             tkw.setdefault("prob_map", self._prob_map)
-        self.T = ct.trace_track(self.pan, r0, px_per_ft=ppf, anchors_px=anc or None, **tkw)
+        nc = int(tkw.pop("n_curves", 1) or 1); pick = tkw.pop("pick", "auto")
+        if nc > 1:   # several curves in the track: trace each, keep ``pick`` (index or "auto")
+            self.T = ct.trace_multi(self.pan, r0, n_curves=nc, pick=pick, px_per_ft=ppf, anchors_px=anc or None, **tkw)
+        else:
+            self.T = ct.trace_track(self.pan, r0, px_per_ft=ppf, anchors_px=anc or None, **tkw)
         if "prob_map" in self.T:
             self._prob_map = self.T["prob_map"]
         self.T["cost0"] = self.T["cost"].copy(); self.excluded_ids = []
@@ -931,6 +935,13 @@ class AssistedSession:
         rr = rows[i0:i1:st]; xs = self.panel_to_sheet(rr, xp[i0:i1:st])
         off = (self.T["off_left"] | self.T["off_right"])[i0:i1:st]; cf = self.T["conf"][i0:i1:st]
         out["trace"] = [[round(float(a), 1), round(float(b), 1), int(o), round(float(c), 2)] for a, b, o, c in zip(rr, xs, off, cf)]
+        cands = self.T.get("candidates") or []
+        if len(cands) > 1:   # other curves in the track (n_curves > 1), drawn for the candidate picker
+            out["candidates"] = []
+            for k, t in enumerate(cands):
+                cr = t["rows"][i0:i1:st]; cx = self.panel_to_sheet(cr, t["x"][i0:i1:st])
+                out["candidates"].append(dict(index=k, picked=k == self.T.get("picked"), score=round(float(t.get("score", 0)), 3),
+                                              trace=[[round(float(a), 1), round(float(b), 1)] for a, b in zip(cr, cx)]))
         out["anchors"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.anchors]
         out["excluded"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.excluded]
         out["backup_intervals"] = [list(a) for a in self.backup_intervals]

@@ -485,9 +485,19 @@ def install(app, root: Path, runner) -> None:
             raise HTTPException(400, f["ml"]["hint"])
         if "mask_other" in body:       # trace on the separated curve layer (separation.curve_layer)
             e.s.trace_kw["mask_other"] = bool(body["mask_other"])
+        if "n_curves" in body:         # several curves in the track: trace each, offer them as candidates
+            n = int(body["n_curves"])
+            if not 1 <= n <= 4:
+                raise HTTPException(400, "n_curves must be 1-4")
+            if n > 1:
+                e.s.trace_kw["n_curves"] = n
+            else:
+                e.s.trace_kw.pop("n_curves", None)
+            e.s.trace_kw.pop("pick", None)
         def work(j):
             s = e.s
-            if mode == "conventional" and s.trace_kw.get("cost_mode", "conventional") == "conventional" and not body.get("force"):
+            if mode == "conventional" and s.trace_kw.get("cost_mode", "conventional") == "conventional" and (
+                    not body.get("force") or int(s.trace_kw.get("n_curves", 1)) > 1):   # set_cost_mode re-traces one curve only
                 j.progress(0, 1, "conventional trace"); s.auto_trace(anchors_panel=s.anchors or None, excluded=s.excluded or None, strokes=s.strokes or None)
             else:
                 j.progress(0, 1, f"{mode} cost map + trace" + (" (U-Net)" if mode != "conventional" else ""))
@@ -498,7 +508,28 @@ def install(app, root: Path, runner) -> None:
     @app.get("/app/api/{sid}/trace/options")
     def trace_options(sid: str):
         kw = get(sid).s.trace_kw
-        return dict(cost_mode=kw.get("cost_mode", "conventional"), mask_other=bool(kw.get("mask_other", False)))
+        T = get(sid).s.T or {}
+        return dict(cost_mode=kw.get("cost_mode", "conventional"), mask_other=bool(kw.get("mask_other", False)),
+                    n_curves=int(kw.get("n_curves", 1)), pick=kw.get("pick", "auto"),
+                    candidates=len(T.get("candidates") or []) or 1, picked=T.get("picked", 0))
+
+    @app.post("/app/api/{sid}/trace/pick")
+    def trace_pick(sid: str, body: dict = Body(...)):
+        """{index}: use candidate ``index`` (from the overlay's candidates) as the curve; re-traces
+        with the pins, guides and exclusions kept. Undo (Z) restores the previous pick."""
+        e = get(sid); n = len((e.s.T or {}).get("candidates") or [])
+        if n < 2:
+            raise HTTPException(400, "no curve candidates: trace with n_curves > 1 first")
+        i = int(body.get("index", -1))
+        if not 0 <= i < n:
+            raise HTTPException(400, f"index must be 0-{n - 1}")
+        push_undo(e, f"pick curve {i + 1}")
+        def work(j):
+            s = e.s; s.trace_kw["pick"] = i
+            j.progress(0, 1, f"tracing with curve {i + 1}")
+            s.auto_trace(anchors_panel=s.anchors or None, excluded=s.excluded or None, strokes=s.strokes or None)
+            return dict(ok=True, picked=s.T.get("picked"))
+        return job(e, "Pick curve", work)
 
     @app.post("/app/api/{sid}/retrace_all")
     def retrace(sid: str):

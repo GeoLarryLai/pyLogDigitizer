@@ -99,6 +99,10 @@ function draw() {
     c.setLineDash([]); }
   if (["scale", "trace", "checks", "qc", "export"].includes(STEP) && OV) {     // trace: red, off-scale orange, "could go another way" yellow halo
     const dis = (STEP === "trace" || STEP === "checks") ? (CHK?.disagree || []) : [], inDis = r => dis.some(([a, b]) => r >= a && r <= b);
+    if (STEP === "trace") for (const cd of (OV.candidates || [])) { if (cd.picked) continue;    // other curves: dashed
+      c.strokeStyle = CAND_COL[cd.index % CAND_COL.length]; c.globalAlpha = 0.7; c.lineWidth = 2; c.setLineDash([7, 5]); c.beginPath(); let f = true;
+      for (const [r, x] of cd.trace) { if (!vis(r)) { f = true; continue; } const p = P(x, r); f ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y); f = false; }
+      c.stroke(); c.setLineDash([]); c.globalAlpha = 1; }
     let prev = null;
     for (const [r, x, o] of OV.trace) { if (!vis(r)) { prev = null; continue; } const p = P(x, r);
       if (prev) { if (inDis(r)) { c.strokeStyle = "rgba(250,204,21,.55)"; c.lineWidth = 9; c.beginPath(); c.moveTo(prev.x, prev.y); c.lineTo(p.x, p.y); c.stroke(); }
@@ -165,7 +169,7 @@ async function onRelease(ev) {
 }
 async function fixCall(path, body) {         // one guided edit: re-trace on the server, redraw, update the change meter
   const r = await api("POST", A(path), body); PROG = r.progress; await refresh(); CHK = null; loadChecks();
-  if (STEP === "trace") { renderAnchors(); renderProgress(r); } return r;
+  if (STEP === "trace") { renderAnchors(); renderProgress(r); renderCands(); } return r;
 }
 async function loadChecks() { if (!SID || !ST?.traced) return; CHK = await api("GET", A("/checks")); draw(); if (STEP === "trace") renderAnchors(); }
 function renderProgress(r) {
@@ -483,6 +487,13 @@ function renderAnchors() {
   $("trInfo").innerHTML = ST.traced ? `<b>${uncertainSpots().length}</b> place(s) where the line could go another way (yellow) · ${ST.n_anchors} pin(s) · ${OV?.strokes?.length || 0} guide(s)` +
     (ST.qc ? `<br>vs paired LAS: r = <b>${fmt(ST.qc.r, 3)}</b>, RMSE ${fmt(ST.qc.rmse, 2)}` : "") : "not traced";
 }
+function renderCands() {
+  const el = $("candList"); if (!el) return; const cs = OV?.candidates || [];
+  el.innerHTML = cs.length ? cs.map(c => `<div class="item"><span style="color:${CAND_COL[c.index % CAND_COL.length]}">■</span> Curve ${c.index + 1}${c.picked ? " <b>(digitized)</b>" : ""} <span class="muted">score ${fmt(c.score, 2)}</span>
+    ${c.picked ? "" : `<button data-pick="${c.index}">Use this curve</button>`}</div>`).join("") : '<span class="muted">one curve traced</span>';
+  el.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => { try { await runJob(A("/trace/pick"), {index: +b.dataset.pick}, "pick curve"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} });
+}
+const CAND_COL = ["#d62728", "#2563eb", "#16a34a", "#9333ea"];
 R.trace = () => {
   const ml = INFO.features.ml;
   $("stepLead").textContent = "Click on the real curve wherever the red line is wrong - the line is redrawn through your click.";
@@ -498,6 +509,8 @@ R.trace = () => {
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="ml" ${ml.ok ? "" : "disabled"}> ML U-Net</label>
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="blend" ${ml.ok ? "" : "disabled"}> blend (conventional + U-Net)</label>${hint(ml)}</div>
     <div class="row"><label><input type="checkbox" id="tMask"> ignore text and stamps (masks lettering, stamps and handwriting before tracing)</label></div>
+    <h3>Curves in this track</h3><div class="row"><label class="muted">Trace <select id="tNC"><option value="1">1 curve</option><option value="2">2 curves</option><option value="3">3 curves</option></select></label>
+      <span class="note">With 2 or more, each curve is traced and drawn dashed; pick the one to digitize (Z undoes).</span></div><div class="list" id="candList"></div>
     <h3>Advanced tools</h3><div class="tools">${tool("exclude", "x", "Not this curve")}${tool("wrap", "w", "Backup interval")}${tool("seed", "s", "Seed trace")}</div>
     <div class="row"><button id="tRetrace">Re-trace all</button><button id="tClrA">Clear pins</button><button id="tClrX">Clear exclusions</button><button id="tClrW">Clear intervals</button><button id="tReset" class="danger">Reset trace</button></div>
     </details>
@@ -508,7 +521,8 @@ R.trace = () => {
   setTimeout(() => setMode("fix"), 0);
   on("tNextU", nextUncertain);
   document.querySelectorAll("input[name=cm]").forEach(r => r.onchange = async () => { try { await runJob(A("/trace"), {mode: r.value, force: true}, r.value + " trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} });
-  api("GET", A("/trace/options")).then(o => { const m = $("tMask"); if (m) m.checked = !!o.mask_other; }).catch(() => {});
+  api("GET", A("/trace/options")).then(o => { const m = $("tMask"); if (m) m.checked = !!o.mask_other; const nc = $("tNC"); if (nc) nc.value = String(o.n_curves || 1); renderCands(); }).catch(() => {});
+  const nc = $("tNC"); if (nc) nc.onchange = async () => { try { await runJob(A("/trace"), {mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true, n_curves: +nc.value}, "trace"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} };
   const tm = $("tMask"); if (tm) tm.onchange = async () => { try { await runJob(A("/trace"), {mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true, mask_other: tm.checked}, "trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} };
   on("tRetrace", async () => { await runJob(A("/retrace_all"), {}, "re-trace"); await refresh(); loadChecks(); });
   on("tClrA", async () => { await api("POST", E("/anchors/clear")); await refresh(); loadChecks(); });
