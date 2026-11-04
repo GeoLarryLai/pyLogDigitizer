@@ -497,6 +497,7 @@ R.trace = () => {
     <h3>Cost map</h3><div class="radio"><label><input type="radio" name="cm" value="conventional" checked> conventional</label>
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="ml" ${ml.ok ? "" : "disabled"}> ML U-Net</label>
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="blend" ${ml.ok ? "" : "disabled"}> blend (conventional + U-Net)</label>${hint(ml)}</div>
+    <div class="row"><label><input type="checkbox" id="tMask"> ignore text and stamps (masks lettering, stamps and handwriting before tracing)</label></div>
     <h3>Advanced tools</h3><div class="tools">${tool("exclude", "x", "Not this curve")}${tool("wrap", "w", "Backup interval")}${tool("seed", "s", "Seed trace")}</div>
     <div class="row"><button id="tRetrace">Re-trace all</button><button id="tClrA">Clear pins</button><button id="tClrX">Clear exclusions</button><button id="tClrW">Clear intervals</button><button id="tReset" class="danger">Reset trace</button></div>
     </details>
@@ -507,6 +508,8 @@ R.trace = () => {
   setTimeout(() => setMode("fix"), 0);
   on("tNextU", nextUncertain);
   document.querySelectorAll("input[name=cm]").forEach(r => r.onchange = async () => { try { await runJob(A("/trace"), {mode: r.value, force: true}, r.value + " trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} });
+  api("GET", A("/trace/options")).then(o => { const m = $("tMask"); if (m) m.checked = !!o.mask_other; }).catch(() => {});
+  const tm = $("tMask"); if (tm) tm.onchange = async () => { try { await runJob(A("/trace"), {mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true, mask_other: tm.checked}, "trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} };
   on("tRetrace", async () => { await runJob(A("/retrace_all"), {}, "re-trace"); await refresh(); loadChecks(); });
   on("tClrA", async () => { await api("POST", E("/anchors/clear")); await refresh(); loadChecks(); });
   on("tClrX", async () => { await api("POST", E("/exclude/clear")); await refresh(); loadChecks(); });

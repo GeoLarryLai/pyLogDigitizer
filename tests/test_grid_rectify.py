@@ -168,3 +168,9 @@ def test_app_grid_routes(warped, tmp_path):
     assert c.post(f"/app/api/{sid}/undo").status_code == 200
     assert c.get(f"/app/api/{sid}/grid").json()["lattice"]["X"][3][4] == pytest.approx(g["lattice"]["X"][3][4])
     assert c.post(f"/app/api/{sid}/grid/off").json()["rectified"] is False
+    # Stage E: trace on the straightened, separated layer from the app
+    wait(c.post(f"/app/api/{sid}/grid/detect", json={}))
+    assert c.get(f"/app/api/{sid}/trace/options").json()["mask_other"] is False
+    wait(c.post(f"/app/api/{sid}/trace", json={"mode": "conventional", "force": True, "mask_other": True}))
+    assert c.get(f"/app/api/{sid}/trace/options").json()["mask_other"] is True
+    st = c.get(f"/app/api/{sid}/state").json(); assert st["undo"][-1].startswith("trace")

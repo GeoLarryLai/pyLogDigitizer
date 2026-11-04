@@ -483,6 +483,8 @@ def install(app, root: Path, runner) -> None:
         f = features(root)
         if mode != "conventional" and not f["ml"]["ok"]:
             raise HTTPException(400, f["ml"]["hint"])
+        if "mask_other" in body:       # trace on the separated curve layer (separation.curve_layer)
+            e.s.trace_kw["mask_other"] = bool(body["mask_other"])
         def work(j):
             s = e.s
             if mode == "conventional" and s.trace_kw.get("cost_mode", "conventional") == "conventional" and not body.get("force"):
@@ -492,6 +494,11 @@ def install(app, root: Path, runner) -> None:
                 s.set_cost_mode(mode, ml_model=f["ml"]["model"] if mode != "conventional" else None)
             return dict(ok=True)
         return job(e, "Trace", work)
+
+    @app.get("/app/api/{sid}/trace/options")
+    def trace_options(sid: str):
+        kw = get(sid).s.trace_kw
+        return dict(cost_mode=kw.get("cost_mode", "conventional"), mask_other=bool(kw.get("mask_other", False)))
 
     @app.post("/app/api/{sid}/retrace_all")
     def retrace(sid: str):
