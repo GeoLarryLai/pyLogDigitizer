@@ -23,7 +23,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
 ]
 dependencies = ["numpy", "pillow", "tifffile", "lasio", "pandas", "pyyaml", "opencv-python", "scikit-image", "scipy",
-                "rapidocr_onnxruntime",   # default OCR engine (header + depth labels); pip wheels only, models bundled
+                "rapidocr>=3,<4", "onnxruntime",   # default OCR engine (header + depth labels); PP-OCRv4 models bundled
                 "numba", "fastapi", "uvicorn", "httpx", "matplotlib"]   # torch optional: ML cost map only
 
 [project.urls]

@@ -22,5 +22,6 @@ dependencies:
   - rust
   - pip
   - pip:
-      - opencv-python          # from pip, same cv2 that rapidocr_onnxruntime needs (one cv2 only)
-      - rapidocr_onnxruntime   # default OCR engine
+      - opencv-python          # from pip, same cv2 that rapidocr needs (one cv2 only)
+      - rapidocr>=3,<4         # default OCR engine (models bundled in pylogdigitizer)
+      - onnxruntime

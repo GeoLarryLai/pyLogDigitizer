@@ -10,6 +10,13 @@ This product includes third-party software:
   Copyright (C) 2009 CodePlex Foundation; Copyright (C) 2010-2024 OpenSeadragon contributors.
   BSD 3-Clause License - see src/pylogdigitizer/web_editor/static/vendor/openseadragon/LICENSE.txt
 
+- PaddleOCR text models (bundled, unmodified, in src/pylogdigitizer/ocr_models/): PP-OCRv4 mobile
+  detection (ch_PP-OCRv4_det_infer.onnx), PP-OCRv4 mobile recognition (ch_PP-OCRv4_rec_infer.onnx)
+  and v2.0 mobile direction classifier (ch_ppocr_mobile_v2.0_cls_infer.onnx), ONNX conversions as
+  distributed by RapidOCR. Copyright (c) PaddlePaddle Authors; RapidOCR conversions Copyright (c)
+  RapidAI. Apache License 2.0 - https://www.apache.org/licenses/LICENSE-2.0
+  (https://github.com/PaddlePaddle/PaddleOCR, https://github.com/RapidAI/RapidOCR)
+
 Example data in example_data/ (scans and LAS files from the Kansas Geological Survey) is not
 covered by this license; see example_data/SOURCES.txt for sources and terms.
 
@@ -17,7 +24,7 @@ Python dependencies (NumPy, OpenCV, scikit-image, lasio, FastAPI, uvicorn, ...) 
 separately and are under their own licenses.
 
 License compatibility: OpenSeadragon (BSD-3-Clause, notice above and its LICENSE.txt
-kept verbatim) and the permissive (BSD/MIT/Apache-2.0) Python and Rust dependencies
+kept verbatim), the Apache-2.0 PaddleOCR models (notice above) and the permissive (BSD/MIT/Apache-2.0) Python and Rust dependencies
 are compatible with AGPLv3 and remain under their own licenses.
 
 Network use (AGPL-3.0 section 13): if you modify pyLogDigitizer and let other people

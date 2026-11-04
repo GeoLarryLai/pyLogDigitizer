@@ -2,8 +2,8 @@
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """ocr_engines: the OCR engine that reads header text and depth labels.
 
-One engine: ``rapidocr`` - RapidOCR (``rapidocr_onnxruntime``: PaddleOCR models on ONNX Runtime), a base
-dependency (pip wheels only, models bundled, no system program). Tesseract was compared on the Kansas
+One engine: ``rapidocr`` - RapidOCR 3.x (``rapidocr`` + ``onnxruntime``) running the PP-OCRv4 mobile
+det/rec and v2.0 cls ONNX models bundled in ``ocr_models/`` (no model download, no system program). Tesseract was compared on the Kansas
 scans (same accuracy, ~9x slower, needs a system install) and dropped.
 
 ``engine='auto'`` = RapidOCR if importable, else None (no OCR: depth falls back to first label + interval,
@@ -14,14 +14,16 @@ import importlib.util, os, threading
 import numpy as np
 
 ENGINES = ("rapidocr",)
-HINTS = {"rapidocr": "pip install rapidocr_onnxruntime   (included in: pip install pylogdigitizer)"}
+HINTS = {"rapidocr": "pip install rapidocr onnxruntime   (included in: pip install pylogdigitizer)"}
+_MODELS = os.path.join(os.path.dirname(__file__), "ocr_models")
 _DEFAULT: str | None = None
 _LOCK = threading.Lock()
 _RAPID = None
 
 
 def available(engine: str = "rapidocr") -> bool:
-    return engine == "rapidocr" and importlib.util.find_spec("rapidocr_onnxruntime") is not None
+    return engine == "rapidocr" and (importlib.util.find_spec("rapidocr") is not None
+                                   and importlib.util.find_spec("onnxruntime") is not None)
 
 
 def status() -> dict:
@@ -66,8 +68,12 @@ def _rapid():
     global _RAPID
     with _LOCK:
         if _RAPID is None:
-            from rapidocr_onnxruntime import RapidOCR
-            _RAPID = RapidOCR()
+            from rapidocr import RapidOCR
+            m = lambda f: os.path.join(_MODELS, f)
+            _RAPID = RapidOCR(params={"Global.log_level": "warning",
+                                      "Det.model_path": m("ch_PP-OCRv4_det_infer.onnx"),
+                                      "Rec.model_path": m("ch_PP-OCRv4_rec_infer.onnx"),
+                                      "Cls.model_path": m("ch_ppocr_mobile_v2.0_cls_infer.onnx")})
     return _RAPID
 
 
@@ -79,9 +85,10 @@ def _rgb(img: np.ndarray) -> np.ndarray:
 def rapid_words(img: np.ndarray, min_conf: float = 30.0) -> list[dict]:
     """Detect + recognise text lines; split each line into words (x shared by character count).
     Returns ``{text, conf (0-100), x0, y0, x1, y1, pass_}`` in ``img`` pixels."""
-    res, _ = _rapid()(_rgb(img), use_cls=False)
+    # rapidocr 3.x keeps use_det/use_cls/use_rec from the previous call: always pass all three
+    r = _rapid()(_rgb(img), use_det=True, use_cls=False, use_rec=True)
     out = []
-    for box, text, conf in res or []:
+    for box, text, conf in zip(r.boxes if r.boxes is not None else [], r.txts or (), r.scores or ()):
         conf = 100 * float(conf)
         if conf < min_conf or not text.strip():
             continue
@@ -98,13 +105,7 @@ def rapid_words(img: np.ndarray, min_conf: float = 30.0) -> list[dict]:
 
 def rapid_line(img: np.ndarray) -> tuple[str, float]:
     """Recognise one already-cropped text line (no detection). Returns (text, conf 0-1)."""
-    eng = _rapid()
-    rec = getattr(eng, "text_rec", None) or getattr(eng, "text_recognizer", None)
-    if rec is None:
-        res, _ = eng(_rgb(img), use_det=False, use_cls=False, use_rec=True)
-    else:   # call the recogniser directly: rapidocr_onnxruntime < 1.3 (the only one on Python >= 3.13) has no use_det
-        res, _ = rec([_rgb(img)])
-    if not res:
+    r = _rapid()(_rgb(img), use_det=False, use_cls=False, use_rec=True)
+    if not r.txts:
         return "", 0.0
-    t, c = res[0][0], res[0][1]
-    return str(t), float(c)
+    return str(r.txts[0]), float(r.scores[0])

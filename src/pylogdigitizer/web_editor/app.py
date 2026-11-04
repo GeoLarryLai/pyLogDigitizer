@@ -212,7 +212,7 @@ def build_app(project_dir: str = ".") -> FastAPI:
         if e.header is None:
             from pylogdigitizer import header_ocr
             if not header_ocr_available():
-                raise HTTPException(400, "no OCR engine installed (pip install rapidocr_onnxruntime)")
+                raise HTTPException(400, "no OCR engine installed (pip install rapidocr onnxruntime)")
             def f(s):
                 return header_ocr.propose_header(s.scan_path, layout=s.L)
             e.header = run(e, f)

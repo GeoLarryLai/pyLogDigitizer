@@ -21,7 +21,7 @@ def test_auto_and_off(monkeypatch):
     monkeypatch.setattr(oe, "available", lambda e="rapidocr": False)
     monkeypatch.delenv("PYLOGDIGITIZER_OCR")
     assert oe.resolve("auto") is None and oe.status()["rapidocr"]["hint"]
-    with pytest.raises(RuntimeError, match="rapidocr_onnxruntime"):
+    with pytest.raises(RuntimeError, match="pip install rapidocr onnxruntime"):
         oe.resolve("rapidocr")
     for bad in ("tesseract", "easyocr9"):
         with pytest.raises(ValueError):
@@ -64,3 +64,23 @@ def test_rapidocr_header_words():
     words = ho.ocr_region(img, backend="rapidocr", remove_lines=False, offset=(100, 10))
     txt = " ".join(w["text"] for w in sorted(words, key=lambda w: w["x0"])).upper()
     assert "GAMMA" in txt and "150" in txt and min(w["x0"] for w in words) >= 100
+
+
+def test_rapidocr_flags_not_sticky():
+    """rapidocr 3.x remembers use_det/use_cls/use_rec: a line read (no detection) must not break the
+    next detect+recognise call."""
+    if not oe.available("rapidocr"):
+        pytest.skip("rapidocr not installed")
+    import cv2
+    assert oe.rapid_line(_label("1500"))[0] == "1500"
+    img = np.full((60, 300), 255, np.uint8)
+    cv2.putText(img, "GAMMA RAY 0 150", (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 0, 2)
+    txt = " ".join(w["text"] for w in oe.rapid_words(img, 0)).upper()
+    assert "GAMMA" in txt and "150" in txt
+    assert oe.rapid_line(_label("2700"))[0] == "2700"   # "1600" reads "1600時" with these models (old engine too)
+
+
+def test_bundled_models_used():
+    import os
+    for f in ("ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx"):
+        assert os.path.getsize(os.path.join(oe._MODELS, f)) > 100_000
