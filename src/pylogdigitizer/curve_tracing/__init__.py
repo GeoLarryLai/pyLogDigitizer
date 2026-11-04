@@ -565,13 +565,44 @@ def untangle(a: np.ndarray, b: np.ndarray, near: float = 4.0, w: int = 6) -> np.
     return swap
 
 
-def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "rough",
+def candidate_features(T: dict) -> dict:
+    """LAS-free description of one traced candidate, for choosing between curves in one track.
+    on_track: share of rows inside the track (not parked off-scale); on_ink: share on ink;
+    spread: 5-95 % range of the on-track x as a share of the track width; rough: thin-bed detail
+    (median deviation from a 25-sample running mean) as a share of the width; flat: share of rows
+    within 1 % of the width of a 201-sample running median (a near-constant curve: caliper, bit size)."""
+    track = ~(T["off_left"] | T["off_right"])
+    width = max(1.0, float(T["cost"].shape[1] - 2 * T["pad"]) * T["fx"])
+    x = np.asarray(T["x"], float)
+    xs = x[track]
+    f = dict(on_track=float(track.mean()), on_ink=float(T.get("on_ink", np.nan)))
+    if len(xs) < 60:
+        return dict(f, spread=0.0, rough=0.0, flat=1.0)
+    lo, hi = np.percentile(xs, [5, 95])
+    k = min(201, len(xs) // 2 * 2 - 1)
+    med = np.array([np.median(xs[max(0, i - k // 2):i + k // 2 + 1]) for i in range(0, len(xs), 5)])
+    med = np.interp(np.arange(len(xs)), np.arange(0, len(xs), 5), med)
+    f.update(spread=float((hi - lo) / width), rough=float(roughness(xs) / width),
+             flat=float(np.mean(np.abs(xs - med) <= 0.01 * width)))
+    return f
+
+
+def auto_pick_score(f: dict) -> float:
+    """Score for "auto": the curve a gamma-ray track is scaled for uses the track (stays on scale,
+    swings across a good part of the width, has thin-bed detail); a companion that is nearly
+    constant or mostly parked off-scale scores low. Uses the traced geometry only - no LAS."""
+    return f["on_track"] * min(1.0, f["on_ink"] / 0.8) * (1.0 - f["flat"]) * (f["spread"] + 4.0 * f["rough"])
+
+
+def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "auto",
                 min_on_ink: float = 0.4, cross: bool = True, **kw) -> dict:
     """Trace up to ``n_curves`` curves sharing a track: each pass treats the curves already traced
-    as used ink. ``pick``: which trace to return as the curve - an index (0 = strongest), or "rough"
-    (the one with most thin-bed detail; a smooth companion such as caliper loses). A pass is kept
+    as used ink (``avoid_cost`` 0.97 by default: a later pass must find other ink, so candidates are
+    distinct curves, or the pass is dropped). ``pick``: an index (0 = strongest), "rough" (most
+    thin-bed detail) or "auto" (:func:`auto_pick_score`, LAS-free). A pass is kept
     only when at least ``min_on_ink`` of its samples are on ink. The returned trace dict carries
     ``candidates`` (all traces) and ``picked``."""
+    kw.setdefault("avoid_cost", 0.97)
     Ts = []
     for _ in range(max(1, n_curves)):
         T = trace_track(panel, row0, avoid_paths=[t["path"] for t in Ts] or None, **kw)
@@ -590,13 +621,16 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
                 a, b = A[k].copy(), B[k].copy()
                 a[sw], b[sw] = B[k][sw], A[k][sw]
                 A[k], B[k] = a, b
-    if isinstance(pick, int):
-        i = min(pick, len(Ts) - 1)
-    else:
-        sc = [roughness(t["x"][~(t["off_left"] | t["off_right"])]) for t in Ts]
-        i = int(np.argmax(sc))
-        for t, v_ in zip(Ts, sc):
-            t["roughness"] = v_
+    for t in Ts:
+        t["features"] = candidate_features(t)
+        t["roughness"] = roughness(t["x"][~(t["off_left"] | t["off_right"])])
+        t["score"] = auto_pick_score(t["features"])
+    if isinstance(pick, (int, np.integer)):
+        i = int(min(pick, len(Ts) - 1))
+    elif pick == "rough":
+        i = int(np.argmax([t["roughness"] for t in Ts]))
+    else:   # "auto"
+        i = int(np.argmax([t["score"] for t in Ts]))
     T = Ts[i]
     T["candidates"] = Ts; T["picked"] = i
     return T
