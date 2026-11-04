@@ -77,8 +77,19 @@ def main(argv=None):
                 tcache[j["scan_path"]] = {"error": str(e)}
         tr = (tcache.get(j["scan_path"]) or {}).get(j.get("track", "track1")) or {}
         resolved, rsrc, rback = None, "unresolved", None
-        if tr.get("confidence") in ("high", "corrected") and tr.get("scale"):
-            resolved, rback, rsrc = list(tr["scale"]), (list(tr["backup"]) if tr.get("backup") else None), "ocr"
+        ts, tb = (list(tr["scale"]) if tr.get("scale") else None), (list(tr["backup"]) if tr.get("backup") else None)
+        hok = conf == "high" and ocr and None not in ocr
+        if ts and j.get("scale_type") == "log":
+            ts = None                      # scale-end pair reader is for linear scales only
+        if ts and tr.get("confidence") in ("high", "corrected") and tb:
+            # two joined pairs: order primary/backup by the header proposal when it names one of them
+            if hok and [float(x) for x in ocr] == [float(x) for x in tb]:
+                ts, tb = tb, ts
+            resolved, rback, rsrc = ts, tb, "ocr"
+        elif ts and tr.get("confidence") == "high" and hok and float(ocr[1]) == float(ts[0]):
+            resolved, rback, rsrc = [float(x) for x in ocr], ts, "ocr"      # header pair + its backup
+        elif ts and tr.get("confidence") == "high" and hok and [float(x) for x in ocr] == [float(x) for x in ts]:
+            resolved, rback, rsrc = ts, bk, "ocr"
         elif conf == "high" and ocr and None not in ocr:
             resolved, rback, rsrc = ocr, bk, "ocr_header"
         elif j.get("scale_source") == "header":
