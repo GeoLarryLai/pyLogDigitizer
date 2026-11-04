@@ -389,13 +389,16 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 grid_frac: float = 0.5, grid_pad: int = 2, px_per_ft: float | None = None,
                 switch_cost: float = 0.5, edge_frac: float = 0.02, use: str | None = None,
                 cost_mode: str = "conventional", ml_model: Any = None, ml_weight: float = 0.15,
-                caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False) -> dict:
+                caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False,
+                seg: bool | str = False, seg_mix: float = 0.5) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
     ``"blend"``, evaluates ``CurveUNet`` (via ``ml_model`` or ``models/kansas_gr_unet.pt``)
     to disfavor competing curves (such as Caliper/SP) before running the DP tracer.
     ``mask_other``: drop text / stamps / handwriting (separation.other_mask) before tracing.
+    ``seg``: True (bundled model) or a path to an ONNX segmentation model (segmentation.Segmenter);
+    the cost becomes (1 - seg_mix) * conventional + seg_mix * (1 - P(curve)).
     """
     from pylogdigitizer import track_grid_detection as tgd
     if mask_other:
@@ -425,6 +428,17 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     cost_conv, lab = build_cost(panel, gcols, min_width=min_width, fy=fy, fx=fx, min_area=min_area,
                                 straight_len=straight_len, return_labels=True)
     cost = cost_conv
+    seg_p = None
+    if seg:
+        from pylogdigitizer import segmentation as sgm
+        import cv2
+        pc = sgm.curve_probability(panel, None if seg is True else seg)
+        hh, ww = cost_conv.shape
+        pc = pc[: hh * fy, : ww * fx]
+        pc = np.pad(pc, ((0, hh * fy - pc.shape[0]), (0, ww * fx - pc.shape[1])))
+        seg_p = pc.reshape(hh, fy, ww, fx).max(axis=(1, 3))
+        cost_conv = ((1 - seg_mix) * cost_conv + seg_mix * (1.0 - seg_p)).astype(cost_conv.dtype)
+        cost = cost_conv
     v61, rel_x = None, None
     if prob_map is None:
         cost_mode = ml_fallback(cost_mode, ml_model)
