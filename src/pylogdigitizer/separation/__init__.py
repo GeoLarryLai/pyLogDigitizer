@@ -184,6 +184,28 @@ def _bridge_along(rest: np.ndarray, cand: np.ndarray, reach: int, sigma: float =
     return out
 
 
+_RG_CACHE: dict = {}
+
+
+def _ink_key(ink: np.ndarray, *extra) -> tuple:
+    import hashlib
+    a = np.ascontiguousarray(np.asarray(ink, bool))
+    return (a.shape, hashlib.blake2b(np.packbits(a).tobytes(), digest_size=16).hexdigest()) + extra
+
+
+def remove_grid_cached(ink: np.ndarray, **kw) -> np.ndarray:
+    """:func:`remove_grid` memoised on the ink content (+ kwargs); identical output. Small LRU (4)."""
+    key = _ink_key(ink, tuple(sorted(kw.items())))
+    hit = _RG_CACHE.pop(key, None)
+    if hit is None:
+        hit = remove_grid(ink, **kw)
+        hit.setflags(write=False)
+    _RG_CACHE[key] = hit
+    while len(_RG_CACHE) > 4:
+        _RG_CACHE.pop(next(iter(_RG_CACHE)))
+    return hit.copy()
+
+
 def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_length: int = 301,
                 max_bridge: int = 41, return_masks: bool = False, col_frac: float = 0.3,
                 use_seg: bool = False, short_length: int = 21, curve_thr: float = 0.5, prob=None):
@@ -235,7 +257,7 @@ def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_lengt
         H |= line_response(ink, "h", short_length, tilt=1) & ~wh
         if prob is None:
             from pylogdigitizer import segmentation as sgm
-            prob = sgm.get_segmenter().predict(ink)
+            prob = sgm.predict_cached(ink)
             pc, pg = prob[sgm.CURVE], prob[sgm.GRID]
         else:
             pc, pg = prob

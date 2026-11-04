@@ -163,6 +163,23 @@ def get_segmenter(path=None) -> Segmenter:
     return _CACHE[k]
 
 
+_PRED_CACHE: dict = {}
+
+
+def predict_cached(ink: np.ndarray, path=None) -> np.ndarray:
+    """``get_segmenter(path).predict(ink)`` memoised on the ink content; identical output (LRU 2)."""
+    from pylogdigitizer.separation import _ink_key
+    key = _ink_key(ink, str(path or MODEL_PATH))
+    hit = _PRED_CACHE.pop(key, None)
+    if hit is None:
+        hit = get_segmenter(path).predict(ink)
+        hit.setflags(write=False)
+    _PRED_CACHE[key] = hit
+    while len(_PRED_CACHE) > 2:
+        _PRED_CACHE.pop(next(iter(_PRED_CACHE)))
+    return hit
+
+
 def available(path=None) -> bool:
     try:
         import onnxruntime  # noqa: F401

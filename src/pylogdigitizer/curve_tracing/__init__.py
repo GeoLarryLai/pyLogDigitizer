@@ -475,10 +475,10 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
             return T0
         return T3
     if grid_removed:
-        from pylogdigitizer.separation import remove_grid
+        from pylogdigitizer.separation import remove_grid_cached
         # erased grid columns are paper now: no line_neutral corridor (the tracer would ride the
         # empty column); grid_veto (seg model) stays on as the backstop for any leftover lines
-        panel = remove_grid(panel, use_seg=grid_removed == "seg")
+        panel = remove_grid_cached(panel, use_seg=grid_removed == "seg")
         gcols = list(exclude_cols or [])
     else:
         vl = tgd.vertical_lines(panel[: min(len(panel), 20000)], grid_frac)
@@ -511,7 +511,7 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     if grid_veto:
         from pylogdigitizer import segmentation as sgm
         thr = 0.5 if grid_veto is True else float(grid_veto)
-        pr = sgm.get_segmenter().predict(panel)
+        pr = sgm.predict_cached(panel)
         hh, ww = cost_conv.shape
         def _ds(m):
             m = m[: hh * fy, : ww * fx]
