@@ -178,7 +178,13 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         from pylogdigitizer import grid_rectify as gr
         pan, lat = gr.rectify_panel(pan)
         checks["grid_lines"] = 0 if lat is None else int(lat.X.shape[1])
-    T = ct.trace_track(pan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
+    nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "rough")
+    if nc > 1:      # several curves in the track (e.g. GR + caliper): trace each, keep ``pick``
+        T = ct.trace_multi(pan, r0, n_curves=nc, pick=pick, px_per_ft=dm.px_per_ft, **trace_kw)
+        checks["curves_traced"] = len(T["candidates"]); checks["curve_picked"] = T["picked"]
+        checks["curve_roughness"] = [t.get("roughness") for t in T["candidates"]]
+    else:
+        T = ct.trace_track(pan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)

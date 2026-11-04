@@ -390,7 +390,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 switch_cost: float = 0.5, edge_frac: float = 0.02, use: str | None = None,
                 cost_mode: str = "conventional", ml_model: Any = None, ml_weight: float = 0.15,
                 caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False,
-                seg: bool | str = False, seg_mix: float = 0.5) -> dict:
+                seg: bool | str = False, seg_mix: float = 0.5, avoid_paths: list | None = None,
+                avoid_band: int = 3, avoid_cost: float = 0.6) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
@@ -437,7 +438,10 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         pc = pc[: hh * fy, : ww * fx]
         pc = np.pad(pc, ((0, hh * fy - pc.shape[0]), (0, ww * fx - pc.shape[1])))
         seg_p = pc.reshape(hh, fy, ww, fx).max(axis=(1, 3))
-        cost_conv = ((1 - seg_mix) * cost_conv + seg_mix * (1.0 - seg_p)).astype(cost_conv.dtype)
+        # the model may only re-rank ink the conventional cost kept: cells it already ruled out
+        # (paper, straight grid / reference lines, line rows) stay ruled out
+        blend = ((1 - seg_mix) * cost_conv + seg_mix * (1.0 - seg_p)).astype(cost_conv.dtype)
+        cost_conv = np.where(cost_conv >= 0.99, cost_conv, blend).astype(cost_conv.dtype)
         cost = cost_conv
     v61, rel_x = None, None
     if prob_map is None:
@@ -476,6 +480,13 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
             ml_weight=ml_weight,
             caliper_weight=caliper_weight,
         )
+    if avoid_paths:   # multi-curve: a curve already traced is no longer free ink (see trace_multi)
+        cost = cost.copy(); hh = min(len(cost), *(len(p_) for p_ in avoid_paths))
+        cols = np.arange(cost.shape[1])[None, :]
+        for p_ in avoid_paths:
+            pp = np.asarray(p_[:hh], int)[:, None]
+            band = np.abs(cols - pp) <= avoid_band
+            cost[:hh][band] = np.maximum(cost[:hh][band], avoid_cost)   # penalized, still crossable
     pad = 1 if offscale_cost is not None else 0
     if pad:  # virtual off-scale columns: the path parks there when the curve leaves the track
         cost = np.pad(cost, ((0, 0), (1, 1)), constant_values=offscale_cost)
@@ -509,6 +520,83 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
             caliper_weight=caliper_weight,
         ),
     )
+    return T
+
+
+def roughness(x: np.ndarray, k: int = 25) -> float:
+    """Median |x - running mean(x, k)| over on-track samples: high for a log with thin-bed detail
+    (GR, SP-free resistivity), low for smooth companions (caliper, bit size, tension). The median
+    keeps a few hops between curves from passing as detail."""
+    x = np.asarray(x, float)
+    if len(x) < 2 * k:
+        return 0.0
+    sm = np.convolve(x, np.ones(k) / k, "same")
+    return float(np.median(np.abs(x - sm)[k:-k]))
+
+
+def untangle(a: np.ndarray, b: np.ndarray, near: float = 4.0, w: int = 6) -> np.ndarray:
+    """Two traces that touch/cross: the DP keeps whichever branch is cheaper at each crossing, so
+    each trace can hop between curves. Split at contacts (|a-b| <= near) and, per contact, keep or
+    swap the following segment so the slope across the contact is continuous (curves pass
+    through crossings). Returns a boolean per row: True where a and b should be exchanged."""
+    a = np.asarray(a, float); b = np.asarray(b, float); n = len(a)
+    touch = np.abs(a - b) <= near
+    swap = np.zeros(n, bool)
+    if not touch.any():
+        return swap
+    i, cur = 0, False
+    while i < n:
+        if not touch[i]:
+            swap[i] = cur; i += 1; continue
+        j = i
+        while j < n and touch[j]:
+            j += 1
+        if i - w >= 0 and j + w <= n:
+            A, B = (b, a) if cur else (a, b)          # current identity of the "a" curve before i
+            sa = (A[i] - A[i - w]) / w
+            keep = abs((A[j + w - 1] - A[j - 1]) / w - sa) + abs((B[j + w - 1] - B[j - 1]) / w - (B[i] - B[i - w]) / w)
+            flip = abs((B[j + w - 1] - B[j - 1]) / w - sa) + abs((A[j + w - 1] - A[j - 1]) / w - (B[i] - B[i - w]) / w)
+            if flip < keep:
+                cur = not cur
+        swap[i:j] = cur
+        i = j
+    return swap
+
+
+def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "rough",
+                min_on_ink: float = 0.4, cross: bool = True, **kw) -> dict:
+    """Trace up to ``n_curves`` curves sharing a track: each pass treats the curves already traced
+    as used ink. ``pick``: which trace to return as the curve - an index (0 = strongest), or "rough"
+    (the one with most thin-bed detail; a smooth companion such as caliper loses). A pass is kept
+    only when at least ``min_on_ink`` of its samples are on ink. The returned trace dict carries
+    ``candidates`` (all traces) and ``picked``."""
+    Ts = []
+    for _ in range(max(1, n_curves)):
+        T = trace_track(panel, row0, avoid_paths=[t["path"] for t in Ts] or None, **kw)
+        track = ~(T["off_left"] | T["off_right"])          # off-scale padding is not ink
+        c = T["cost"][np.arange(len(T["path_padded"])), T["path_padded"]]
+        on = float(np.mean(track & (c < 0.9)))
+        T["on_ink"] = on
+        if Ts and on < min_on_ink:
+            break
+        Ts.append(T)
+    if cross and len(Ts) == 2:   # re-assign segments at crossings so each candidate follows one curve
+        A, B = Ts
+        sw = untangle(A["path"], B["path"], near=max(1.0, 4.0 / A["fx"]))
+        if sw.any():
+            for k in ("path", "path_padded", "x", "conf", "off_left", "off_right"):
+                a, b = A[k].copy(), B[k].copy()
+                a[sw], b[sw] = B[k][sw], A[k][sw]
+                A[k], B[k] = a, b
+    if isinstance(pick, int):
+        i = min(pick, len(Ts) - 1)
+    else:
+        sc = [roughness(t["x"][~(t["off_left"] | t["off_right"])]) for t in Ts]
+        i = int(np.argmax(sc))
+        for t, v_ in zip(Ts, sc):
+            t["roughness"] = v_
+    T = Ts[i]
+    T["candidates"] = Ts; T["picked"] = i
     return T
 
 
