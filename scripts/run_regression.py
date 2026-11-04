@@ -21,7 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 FIELDS = ["well", "scan", "curve", "status", "r", "rmse", "bias", "mae", "n", "shift_ft", "depth_top", "depth_base",
           "ref_top", "ref_base", "px_per_ft", "depth_source", "label_mode", "n_labels", "loo_max_ft", "n_wraps",
-          "scale_source", "seconds", "message"]
+          "r_reg", "gain", "offset", "max_local_shift_ft", "xref", "scale_source", "seconds", "message"]
 
 
 def run_one(job: dict, use_ocr: bool, q):
@@ -50,6 +50,20 @@ def run_one(job: dict, use_ocr: bool, q):
             choice = f"needed a user choice: section={best['index']} ({best['top']:.0f}-{best['base']:.0f} ft) of " + \
                      ", ".join(f"{c['top']:.0f}-{c['base']:.0f}" for c in e.sections) + ";"
             R = wf.digitize_curve(job["scan_path"], scale=tuple(job["scale"]), use_ocr=use_ocr, section=best["index"], **kw)
+            # independent reference, no LAS involved: the same curve digitized from another section of
+            # the same sheet (e.g. the 2" print vs the 5" print) over their common interval
+            xr = []
+            for c in e.sections:
+                ov = min(c["base"], best["base"]) - max(c["top"], best["top"])
+                if c["index"] == best["index"] or ov < 100:
+                    continue
+                try:
+                    R2 = wf.digitize_curve(job["scan_path"], scale=tuple(job["scale"]), use_ocr=use_ocr, section=c["index"], **kw)
+                    x = qc.compare(R2["depth"], R2["value"], R["depth"], R["value"])["registered"]
+                    xr.append(f"section{c['index']}:r={x['r']:.3f}/n={x['n']}")
+                except Exception as ex:
+                    xr.append(f"section{c['index']}:{type(ex).__name__}")
+            row["xref"] = " ".join(xr)
         rv, tv = ref.values.astype(float), np.asarray(R["value"], float)
         if job.get("scale_type") == "log":
             rv = np.log10(np.clip(rv, 1e-3, None)); tv = np.log10(np.clip(tv, 1e-3, None))
@@ -59,7 +73,10 @@ def run_one(job: dict, use_ocr: bool, q):
                    depth_top=ck.get("depth_top"), depth_base=ck.get("depth_base"),
                    ref_top=float(ref.index.min()), ref_base=float(ref.index.max()), px_per_ft=ck.get("px_per_ft"),
                    depth_source=ck.get("source"), label_mode=ck.get("label_mode"), n_labels=ck.get("n_labels"),
-                   loo_max_ft=ck.get("loo_max_ft"), n_wraps=ck.get("n_wraps"), message=choice + m.get("reason", ""))
+                   loo_max_ft=ck.get("loo_max_ft"), n_wraps=ck.get("n_wraps"), message=choice + m.get("reason", ""),
+                   r_reg=c["registered"]["r"], gain=c["registered"]["gain"], offset=c["registered"]["offset"],
+                   max_local_shift_ft=c["registered"]["max_local_shift_ft"])
+        row["_trace"] = (np.asarray(R["depth"], float), tv)
         if "ocr_disagrees_with_first_depth" in ck:
             row["message"] += f" OCR first label {ck['ocr_disagrees_with_first_depth'][0]} != config {ck['ocr_disagrees_with_first_depth'][1]}"
         r = m["r"]
@@ -122,13 +139,19 @@ def main(argv=None):
     ctx = mp.get_context("spawn")
     for j in jobs:
         q = ctx.Queue(); p = ctx.Process(target=run_one, args=(j, False if a.no_ocr else (a.ocr_engine if a.ocr_engine != "auto" else True), q)); t = time.time()
-        p.start(); p.join(a.timeout)
-        if p.is_alive():
+        p.start()
+        got = None
+        try:   # read before join: a large result blocks the child's queue feeder until it is read
+            got = q.get(timeout=a.timeout)
+        except Exception:
+            pass
+        p.join(5 if got is not None else 1)
+        if got is not None:
+            row = got
+        elif p.is_alive():
             p.kill(); p.join()
             row = {k: "" for k in FIELDS}; row.update(well=j["well"], scan=j["scan"], curve=j["curve"], status="error",
                                                      message=f"timeout after {a.timeout}s", seconds=a.timeout)
-        elif not q.empty():
-            row = q.get()
         else:
             row = {k: "" for k in FIELDS}; row.update(well=j["well"], scan=j["scan"], curve=j["curve"], status="error",
                                                      message=f"process died (exit {p.exitcode}; out of memory?)",
@@ -137,7 +160,21 @@ def main(argv=None):
         def f(v):
             return f"{v:.3f}" if isinstance(v, float) else str(v)
         print(f"{row['well']:18s} {row['scan']:11s} {row['curve']:5s} {row['status']:6s} r={f(row['r'])} n={row['n']} "
-              f"{row['seconds']}s {row['message'][:120]}", flush=True)
+              f"r_reg={f(row.get('r_reg', ''))} gain={f(row.get('gain', ''))} {row['seconds']}s {row.get('xref', '')} "
+              f"{row['message'][:120]}", flush=True)
+    # independent reference across scans: the same well + curve digitized from two different prints
+    from pylogdigitizer import qc_compare as qc
+    for i, r1 in enumerate(rows):
+        for r2 in rows[i + 1:]:
+            if r1["well"] == r2["well"] and r1["curve"] == r2["curve"] and "_trace" in r1 and "_trace" in r2:
+                (d1, v1), (d2, v2) = r1["_trace"], r2["_trace"]
+                x = qc.compare(d1, v1, d2, v2)["registered"]
+                if x["n"] >= 200:
+                    for ra, rb in ((r1, r2), (r2, r1)):
+                        ra["xref"] = (ra.get("xref", "") + f" {rb['scan']}:r={x['r']:.3f}/n={x['n']}").strip()
+                    print(f"cross-print {r1['well']} {r1['curve']}: {r1['scan']} vs {r2['scan']} r={x['r']:.3f} n={x['n']}")
+    for r_ in rows:
+        r_.pop("_trace", None)
     pathlib.Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, FIELDS); w.writeheader(); w.writerows(rows)

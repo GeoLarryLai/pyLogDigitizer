@@ -71,8 +71,61 @@ def compare(ref_depth, ref_values, test_depth, test_values, step: float = 0.5, m
     r = to_grid(ref_depth, ref_values, grid); t = to_grid(test_depth, test_values, grid)
     s = align_depth(r, t, int(max_shift_ft / step)) if max_shift_ft else 0
     ta = shift(t, s)
-    return dict(grid=grid, ref=r, test=t, test_aligned=ta, shift_ft=s * step,
-                raw=metrics(r, t), aligned=metrics(r, ta))
+    tr, sh = register(r, ta, step)
+    reg = metrics(r, tr); reg.update(value_fit(r, tr))
+    reg["max_local_shift_ft"] = float(np.max(np.abs(sh))) if len(sh) else 0.0
+    return dict(grid=grid, ref=r, test=t, test_aligned=ta, shift_ft=s * step, test_registered=tr,
+                local_shift_ft=sh, raw=metrics(r, t), aligned=metrics(r, ta), registered=reg)
+
+
+def register(ref: np.ndarray, test: np.ndarray, step: float = 0.5, window_ft: float = 60.0,
+             max_local_ft: float = 5.0, min_r: float = 0.3, max_slope: float = 0.05) -> tuple[np.ndarray, np.ndarray]:
+    """Depth registration on a common grid: local shifts (|s| <= ``max_local_ft``) from cross-
+    correlation in half-overlapping windows, kept only where the window correlates (``min_r``),
+    median-smoothed and limited to a stretch of ``max_slope`` ft/ft, so the warp stays monotone and
+    cannot chase noise. Returns (test_registered, shift_ft per sample; positive = moved up)."""
+    n = len(ref); w = max(20, int(window_ft / step)); ms = int(max_local_ft / step)
+    cs, ss = [], []
+    for a in range(0, max(1, n - w + 1), w // 2):
+        r_, t_ = ref[a:a + w], test[a:a + w]
+        best, bs = -2.0, None
+        for k in range(-ms, ms + 1):
+            b = shift(t_ if k == 0 else test, k)
+            b = b if k == 0 else b[a:a + w]
+            ok = np.isfinite(r_) & np.isfinite(b)
+            if ok.sum() < w // 2 or np.ptp(r_[ok]) == 0 or np.ptp(b[ok]) == 0:
+                continue
+            c = np.corrcoef(r_[ok], b[ok])[0, 1]
+            if c > best:
+                best, bs = c, k
+        if bs is not None and best >= min_r:
+            cs.append(a + w / 2); ss.append(bs * step)
+    if not cs:
+        return test.copy(), np.zeros(n)
+    ss = np.asarray(ss, float)
+    if len(ss) >= 3:     # median of 3: one bad window cannot pull the warp
+        ss = np.r_[ss[0], [np.median(ss[i - 1:i + 2]) for i in range(1, len(ss) - 1)], ss[-1]]
+    sh = np.interp(np.arange(n), cs, ss)
+    lim = max_slope * step     # limit the stretch rate (forward then backward pass)
+    for i in range(1, n):
+        sh[i] = np.clip(sh[i], sh[i - 1] - lim, sh[i - 1] + lim)
+    for i in range(n - 2, -1, -1):
+        sh[i] = np.clip(sh[i], sh[i + 1] - lim, sh[i + 1] + lim)
+    idx = np.arange(n) + sh / step
+    ok = np.isfinite(test)
+    out = np.interp(idx, np.flatnonzero(ok), test[ok], left=np.nan, right=np.nan) if ok.sum() >= 2 else test.copy()
+    out[~np.isfinite(np.interp(idx, np.arange(n), np.where(ok, 0.0, np.nan)))] = np.nan
+    return out, sh
+
+
+def value_fit(ref: np.ndarray, test: np.ndarray) -> dict:
+    """Least-squares ref ~ gain * test + offset: a gain far from 1 or a large offset points at a
+    wrong scale (ends, backup or log/linear) rather than a tracing error."""
+    ok = np.isfinite(ref) & np.isfinite(test)
+    if ok.sum() < 3 or np.ptp(test[ok]) == 0:
+        return dict(gain=np.nan, offset=np.nan, rmse_fit=np.nan)
+    g, o = np.polyfit(test[ok], ref[ok], 1)
+    return dict(gain=float(g), offset=float(o), rmse_fit=float(np.sqrt(np.mean((g * test[ok] + o - ref[ok]) ** 2))))
 
 
 def qc_plot(depth: np.ndarray, ref: np.ndarray, test: np.ndarray, out: str, title: str = "",
