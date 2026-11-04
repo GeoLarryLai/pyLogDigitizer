@@ -39,6 +39,10 @@ def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge:
             a = i
         elif a is not None and lo[i - 1] and not lo[i] and far[i] - far[i - 1] > jump:
             out.append((a, i)); a = None
+        elif a is not None and far[i] > 1 - jump and not (far[i] - far[i - 1] > jump):
+            # the "backup" stretch drifted across the track without jumping back: it was a full-width
+            # excursion of the main curve (e.g. a cycle-skip spike), not a wrap
+            a = None
     if a is not None:
         out.append((a, len(x)))
     return out
