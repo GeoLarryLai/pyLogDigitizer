@@ -246,7 +246,7 @@ def remove_grid(ink: np.ndarray, length: int = 61, max_width: int = 3, ref_lengt
         # missed by hline_bands): straight runs >= 30% of the width, any thickness <= max_bridge.
         # Geometry wins over the seg model here; crossings are bridged below.
         L = max(length, int(0.3 * ink.shape[1]))
-        th = line_response(ink, "h", L, tilt=1)
+        th = line_response(wh, "h", L, tilt=0) & ink & ~protect
         if th.any():
             tall = cv2.morphologyEx(th.astype(np.uint8), cv2.MORPH_OPEN, np.ones((max_bridge, 1), np.uint8)).astype(bool)
             H |= th & ~tall
