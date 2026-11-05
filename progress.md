@@ -56,3 +56,14 @@
 - Chitwood_12 GR:2: r_reg 0.993, 53 s run, 329 clipped samples set to null.
 - Swanson_1 GR: r_reg 0.736, 9 s run. The scan covers only about 500-1050 ft. Over that stretch the trace follows the ink closely. It skips across with straight connector lines where the curve leaves the track, which may be a backup that was missed.
 - Figures: /workspace/pld_viz_out/easy_ink/.
+
+## Swanson spikes + easy ink 2 (2026-11-05)
+- New spike_excursions step for model mode with a backup scale. Some off-scale spikes are drawn as near-horizontal strokes, too fast for the row-wise tracer, which bridges them with straight connectors. Where a curve-ink run starts at the trace and reaches the wrap edge, the value is read from a backup run entering from the opposite edge; if there is none, the sample is null.
+- Swanson_1 GR: r_reg 0.736 -> 0.736. Only about 800 ft fires, and it is nulled (KGS 188 there).
+  - At 643 ft the spike strokes in the 1-bit scan merge with horizontal grid lines and are labelled grid, so the curve ink loses them.
+  - Running on all ink instead gave false hits on grid lines.
+  - Most connectors are therefore not fixed.
+- Easy GR scans, default model path, no tuning (r_reg): ELY_1 0.530, GOHEEN_UNIT_1 0.617, Hall_D_4 0.630, USA_A_16 0.735, Minzer_1 0.080.
+  - Minzer: the trace misses the backup curve near the left edge and bridges spikes. Around 3200-3800 ft it reads about 15 where KGS reads about 120 (to check: section/scale or the backup).
+  - Earlier: Chitwood_12 0.993.
+- Figures: /workspace/pld_viz_out/easy_ink2/.
