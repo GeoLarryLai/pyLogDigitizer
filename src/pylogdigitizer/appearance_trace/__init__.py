@@ -349,10 +349,13 @@ def seeded_multi_trace(curve_ink: np.ndarray, fy: int, n: int = 2, seed_len: int
 
 def role_by_style(seeded: list, want: str) -> int:
     """Index of the seeded trace matching a line style when no legend is readable: ``want`` =
-    "dashed" (largest gap share) or "solid" (smallest); "thick" / "thin" by median stroke width."""
+    "dashed" (largest gap share) or "solid" (smallest); "thick" / "thin" by median stroke width; "left" / "right" by median position."""
     if want in ("dashed", "solid"):
         g = [t["gap_frac"] for t in seeded]
         return int(np.argmax(g) if want == "dashed" else np.argmin(g))
+    if want in ("left", "right"):
+        xs = [float(np.nanmedian(t["x"])) for t in seeded]
+        return int(np.argmin(xs) if want == "left" else np.argmax(xs))
     w = [float(np.median(t["width"])) for t in seeded]
     return int(np.argmax(w) if want == "thick" else np.argmin(w))
 

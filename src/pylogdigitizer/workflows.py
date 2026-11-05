@@ -144,6 +144,16 @@ def calibrate_depth(L: Layout, track: str = "track1", first_depth: float | None 
     return dm, anchors, res, checks
 
 
+LINE_HINTS = ("thin", "thick", "dashed", "solid", "left", "right")
+
+
+def check_line_hint(h: str) -> str:
+    """Validate a per-well line hint (appearance or position of this curve's line in its track)."""
+    if h not in LINE_HINTS:
+        raise ValueError(f"line_hint must be one of {LINE_HINTS}, got {h!r}")
+    return h
+
+
 def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: float | None = None,
                    depth_range: tuple[float, float] | None = None, width: int | None = None,
                    backup: tuple[float, float] | None = None, wrap_side: str = "right",
@@ -185,6 +195,12 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     seg_model = trace_kw.pop("seg_model", None)
     seed_curves = trace_kw.pop("seed_curves", False)
     seed_role = trace_kw.pop("seed_role", None)
+    # per-well/track line hint, for scans without a readable legend: which seeded line is this curve
+    # ("thin"/"thick"/"dashed"/"solid"/"left"/"right"). Appearance only, never LAS values.
+    line_hint = trace_kw.pop("line_hint", None)
+    if line_hint:
+        check_line_hint(line_hint)
+        seed_role = line_hint; seed_curves = True
     class_role = trace_kw.pop("class_role", None)      # identity model: "A" (heavier/solid) or "B" (lighter/patterned) is this curve        # line style of the wanted curve when no legend: dashed/solid/thick/thin
     clip_null = trace_kw.pop("clip_null", None)        # null where the curve is clipped at the track edge (default: on with "model")    # with "model": independent seeds for multi-curve tracks
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only

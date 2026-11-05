@@ -134,3 +134,16 @@ def test_class_inks_trace_each_curve_on_its_own_class():
     far = np.abs(xa[rows] - xb[rows]) > 15
     assert np.median(np.abs(T[0]["x"] - xb[rows])[far]) <= 3      # first = the requested class (B)
     assert np.mean(np.abs(T[1]["x"] - xa[rows])[far] < 7) > 0.9   # right curve (a swap would be ~100 px off)
+
+
+def test_role_by_position_hint():
+    seeded = [dict(x=np.full(5, 300.0)), dict(x=np.full(5, 40.0))]
+    assert at.role_by_style(seeded, "left") == 1 and at.role_by_style(seeded, "right") == 0
+
+
+def test_line_hint_rejects_unknown():
+    import pytest
+    from pylogdigitizer import workflows as wf
+    with pytest.raises(ValueError, match="line_hint"):
+        wf.check_line_hint("NPHI")
+    assert wf.check_line_hint("thin") == "thin"
