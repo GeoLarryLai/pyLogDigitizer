@@ -104,6 +104,13 @@ def main() -> None:
         plt.close(fig)
 
     (VIZ / "e2e_scores.json").write_text(json.dumps({"well": log.well, "scores": scores}, indent=2, default=str))
+    # Regions JSON next to LAS
+    reg = OUT / "matterhorn_ro699_digitized.regions.json"
+    reg.write_text(json.dumps({
+        "source_pdf": str(PDF), "las": str(las_path), "well": log.well,
+        "layouts": [L.as_dict() for L in log.layouts], "scores": scores,
+    }, indent=2, default=str))
+    print("regions JSON", reg)
     print("scores →", VIZ / "e2e_scores.json")
     print("well", log.well)
 
