@@ -19,6 +19,7 @@ from pylogdigitizer.pdf_vector.calibrate import (
     is_near_gray,
     is_near_white,
     depth_map_from_labels,
+    detect_depth_axis,
     parse_curve_headers,
     legend_styles_from_strokes,
     tracks_from_grids,
@@ -347,6 +348,152 @@ def _apply_explicit_styles(
                 h.color = tuple(float(c) for c in mnemonic_colors[h.mnemonic])
 
 
+
+def _hgrid_ys(strokes: list[Stroke], min_dx: float = 200.0) -> list[float]:
+    """Unique y positions of long near-horizontal grid lines (track edges)."""
+    ys: list[float] = []
+    for s in strokes:
+        if len(s.pts) < 2:
+            continue
+        dx = float(np.ptp(s.pts[:, 0]))
+        dy = float(np.ptp(s.pts[:, 1]))
+        if dx >= min_dx and dy < 2.0 and is_near_black(s.color) and not s.dash:
+            ys.append(float(np.median(s.pts[:, 1])))
+    if not ys:
+        return []
+    ys = sorted(ys)
+    out = [ys[0]]
+    for y in ys[1:]:
+        if y - out[-1] > 3.0:
+            out.append(y)
+    return out
+
+
+def _horizontal_curve_strokes(strokes: list[Stroke]) -> list[Stroke]:
+    """Long polylines that run with depth (x) across a track band (small dy)."""
+    out: list[Stroke] = []
+    for s in strokes:
+        if len(s.pts) < 40:
+            continue
+        dx = float(np.ptp(s.pts[:, 0]))
+        dy = float(np.ptp(s.pts[:, 1]))
+        if dx < 80:
+            continue
+        if dy > 0.6 * dx:  # not a horizontal track curve
+            continue
+        # Skip white/grey fills; pure black ink curves are kept (is_near_gray
+        # also matches black, so require non-black before dropping).
+        if is_near_white(s.color):
+            continue
+        if is_near_gray(s.color) and not is_near_black(s.color):
+            continue
+        out.append(s)
+    return out
+
+
+def _track_for_y(y: float, bounds: list[float]) -> tuple[float, float] | None:
+    if len(bounds) < 2:
+        return None
+    for i in range(len(bounds) - 1):
+        y0, y1 = bounds[i], bounds[i + 1]
+        if y0 - 2 <= y <= y1 + 2:
+            return y0, y1
+    # nearest band centre
+    mids = [0.5 * (bounds[i] + bounds[i + 1]) for i in range(len(bounds) - 1)]
+    k = int(np.argmin([abs(y - m) for m in mids]))
+    return bounds[k], bounds[k + 1]
+
+
+def traces_from_page_horizontal(
+    page: PageVectors,
+    depth_map: DepthMap | None = None,
+    headers: list[CurveHeader] | None = None,
+) -> list[CurveTrace]:
+    """Assemble traces for horizontal digital prints (depth along +x, value along +y).
+
+    USGS GeoLog Locator PDFs stack tracks vertically; each track's lower/upper grid
+    line is ``v_left`` / ``v_right``. Curve identity is by y-band proximity to the
+    scale label (these prints are typically monochrome — no colour legend).
+    """
+    if depth_map is None:
+        depth_map = depth_map_from_labels(page.texts, axis="x")
+    if depth_map is None:
+        return []
+    page_headers = parse_curve_headers(page.texts)
+    if headers is None:
+        headers = page_headers
+    else:
+        have = {h.mnemonic for h in headers}
+        headers = list(headers) + [h for h in page_headers if h.mnemonic not in have]
+    bounds = _hgrid_ys(page.strokes)
+    curves = _horizontal_curve_strokes(page.strokes)
+    if not bounds or not curves:
+        return []
+
+    skip = {"TIME_1900", "VDL", "MAIN", "REPEAT", "OPTICAL_IMAGE", "ACOUSTIC_IMAGE",
+            "GAMMA_IMAGE", "DIP_IN_DEGREES", "WATER_LEVEL", "TRANS"}
+    # Group headers by track band; within a band match left→right headers to
+    # bottom→top strokes (USGS amb/pmp share a track).
+    by_band: dict[tuple[float, float], list[CurveHeader]] = defaultdict(list)
+    for h in headers:
+        if h.mnemonic in skip:
+            continue
+        band = _track_for_y(h.y, bounds)
+        if band is None:
+            continue
+        y0, y1 = band
+        if not (y0 - 15 <= h.y <= y1 + 5):
+            band = _track_for_y(h.y + 20, bounds) or band
+        by_band[band].append(h)
+
+    claimed: set[int] = set()
+    out: list[CurveTrace] = []
+    for (y0, y1), band_headers in by_band.items():
+        band_strokes: list[Stroke] = []
+        for s in curves:
+            if id(s) in claimed:
+                continue
+            y_med = float(np.median(s.pts[:, 1]))
+            if y0 - 2 <= y_med <= y1 + 2:
+                band_strokes.append(s)
+        if not band_strokes:
+            continue
+        # Left header → lower-mean-y stroke (smaller values when v_left at bottom).
+        hs = sorted(band_headers, key=lambda h: h.x)
+        ss = sorted(band_strokes, key=lambda s: float(np.median(s.pts[:, 1])))
+        for h, chain in zip(hs, ss):
+            claimed.add(id(chain))
+            scale = ScaleMap(y0, y1, h.v_left, h.v_right, h.kind)
+            depth = np.asarray(depth_map(chain.pts[:, 0]), float)
+            value = np.asarray(scale(chain.pts[:, 1]), float)
+            lo, hi = ((scale.x_left, scale.x_right)
+                      if scale.x_left < scale.x_right else (scale.x_right, scale.x_left))
+            clip_tol = 1.5
+            clipped = (chain.pts[:, 1] <= lo + clip_tol) | (chain.pts[:, 1] >= hi - clip_tol)
+            value = value.copy()
+            value[clipped] = np.nan
+            order = np.argsort(depth)
+            depth, value = depth[order], value[order]
+            if len(depth) >= 2:
+                _, uniq_idx = np.unique(np.round(depth, 6), return_index=True)
+                uniq_idx.sort()
+                depth, value = depth[uniq_idx], value[uniq_idx]
+            out.append(CurveTrace(
+                mnemonic=h.mnemonic, depth=depth, value=value,
+                color=tuple(float(c) for c in colour_key(chain.color)[:3]),
+                unit=h.unit, kind=h.kind, page_index=page.page_index,
+                info={"n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
+                      "track": (y0, y1), "layout": "horizontal",
+                      "v_left": h.v_left, "v_right": h.v_right},
+            ))
+        # Leftover strokes in band with no header: still emit as anonymous curves.
+        for chain in ss[len(hs):]:
+            if id(chain) in claimed:
+                continue
+            claimed.add(id(chain))
+    return out
+
+
 def traces_from_page(
     page: PageVectors,
     depth_map: DepthMap | None = None,
@@ -360,10 +507,17 @@ def traces_from_page(
 
     Style identity (colour + width + dash) comes from the page legend by default.
     ``mnemonic_colors`` / ``mnemonic_styles`` remain as explicit overrides.
+
+    Horizontal digital prints (USGS GeoLog Locator style) are routed to
+    :func:`traces_from_page_horizontal` when depth ticks run along +x.
     """
+    axis = detect_depth_axis(page.texts)
+    if axis == "x":
+        return traces_from_page_horizontal(page, depth_map=depth_map, headers=headers)
+
     grid_h, grid_v, curves = classify_strokes(page.strokes)
     if depth_map is None:
-        depth_map = depth_map_from_labels(page.texts)
+        depth_map = depth_map_from_labels(page.texts, axis="y")
     if depth_map is None:
         return []
     page_headers = parse_curve_headers(page.texts)

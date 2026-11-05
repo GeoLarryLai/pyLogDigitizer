@@ -1,7 +1,9 @@
 # %%
-# pdf_vector brief flow: legend styles → digitize → continuity unwrap → LAS.
+# digital_print / pdf_vector: clean digitally exported prints (PDF; TIFF later),
+# NOT ink-on-paper scans (those stay on the scan workflow).
+# Flow: auto regions (header / scale-legend / tracks / curves) → digitize → LAS.
 # Run: PYTHONPATH=src python notebooks/pdf_vector_demo.py
-# Or open as a notebook (jupytext / VS Code cells).
+# USGS horizontal example: scripts/pdf_vector_e2e_usgs.py → digital_print_usgs/.
 from __future__ import annotations
 
 import urllib.request
@@ -36,6 +38,8 @@ pdf = DATA / PDF_NAME
 # Pages span shallow→deep so MTEM linear wrap unwraps by continuity.
 log = digitize_pdf(pdf, pages=[5, 10, 19, 29], step=0.5)
 print("well", log.well)
+print("layout axis", [L.axis for L in log.layouts])
+print("regions", [(r.kind, r.label) for L in log.layouts for r in L.regions[:8]])
 print("legend", {
     h.mnemonic: {"color": h.color, "width": h.width, "dash": h.dash,
                  "scale": f"{h.v_left}-{h.v_right} {h.unit}"}

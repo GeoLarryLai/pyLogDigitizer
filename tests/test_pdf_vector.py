@@ -131,3 +131,35 @@ def test_unwrap_continuity_preserves_on_scale():
     value = np.array([140.0, 145.0, 150.0])
     out = unwrap_continuity(depth, value, 100.0, 500.0, kind="linear")
     assert np.allclose(out, value)
+
+
+def test_usgs_scale_and_axis_helpers():
+    """USGS digital-print quirks: spaced units, 48 In → 4..8, horizontal axis."""
+    from pylogdigitizer.pdf_vector.calibrate import detect_depth_axis
+    from pylogdigitizer.pdf_vector.extract import TextItem
+
+    assert parse_scale_label("50 55 Deg F") == (50.0, 55.0, "Deg F", "linear")
+    assert parse_scale_label("48 In") == (4.0, 8.0, "In", "linear")
+    assert parse_scale_label("3 300 Ft^2/d")[3] == "linear"
+    # Horizontal depth ticks along x.
+    ticks = [TextItem(x=100 + 20 * i, y=12.0, text=str(10 * i), size=1.0) for i in range(0, 12)]
+    assert detect_depth_axis(ticks) == "x"
+    # Vertical depth ticks along y.
+    ticks_v = [TextItem(x=20.0, y=500 - 30 * i, text=str(1000 + 50 * i), size=10.0) for i in range(6)]
+    assert detect_depth_axis(ticks_v) == "y"
+
+
+def test_page_layout_regions_api():
+    from pylogdigitizer.pdf_vector.regions import detect_page_layout, Region, PageLayout
+    from pylogdigitizer.pdf_vector.extract import extract_page
+    from pypdf import PdfReader
+
+    assert FIXTURE.is_file()
+    reader = PdfReader(str(FIXTURE))
+    pv = extract_page(reader, 0)
+    layout = detect_page_layout(pv)
+    assert isinstance(layout, PageLayout)
+    assert layout.axis in {"x", "y"}
+    kinds = {r.kind for r in layout.regions}
+    # Tiny fixture is vertical with scales at top.
+    assert "scale_legend" in kinds or "track" in kinds or "depth_axis" in kinds

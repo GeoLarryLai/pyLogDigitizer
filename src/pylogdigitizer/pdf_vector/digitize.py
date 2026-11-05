@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""End-to-end vector-PDF → dense traces → LAS (shared resample / write_las)."""
+"""End-to-end digital-print PDF → dense traces → LAS (shared resample / write_las).
+
+Handles vertical oilfield prints and horizontal USGS GeoLog Locator exports.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,6 +21,7 @@ from pylogdigitizer.pdf_vector.calibrate import (
     CurveHeader,
 )
 from pylogdigitizer.pdf_vector.assemble import traces_from_page, stitch_traces, CurveTrace
+from pylogdigitizer.pdf_vector.regions import detect_page_layout, PageLayout
 
 
 @dataclass
@@ -29,6 +33,7 @@ class DigitizedLog:
     curves: dict[str, np.ndarray] = field(default_factory=dict)
     step: float = 0.5
     headers: list[CurveHeader] = field(default_factory=list)
+    layouts: list[PageLayout] = field(default_factory=list)
     info: dict = field(default_factory=dict)
 
     def to_las(self, path: str | Path, step: float | None = None, null: float = -999.25) -> Path:
@@ -69,6 +74,7 @@ class DigitizedLog:
 
 
 def _log_pages(reader: PdfReader) -> list[int]:
+    """Pages that look like log plots (vertical oilfield or horizontal USGS)."""
     import re
     out = []
     for i, page in enumerate(reader.pages):
@@ -77,8 +83,9 @@ def _log_pages(reader: PdfReader) -> list[int]:
             if text and str(text).strip():
                 texts.append(str(text).strip())
         page.extract_text(visitor_text=visitor)
-        n = sum(1 for t in texts if re.fullmatch(r"\d{3,5}", t) and 50 <= int(t) <= 50000)
-        if n >= 4:
+        deep = sum(1 for t in texts if re.fullmatch(r"\d{3,5}", t) and 50 <= int(t) <= 50000)
+        shallow = sum(1 for t in texts if re.fullmatch(r"\d{1,5}", t) and 0 <= int(t) <= 50000)
+        if deep >= 4 or shallow >= 8:
             out.append(i)
     return out
 
@@ -160,13 +167,16 @@ def digitize_pdf(
     doc_headers = headers if headers is not None else _collect_headers(reader, pages)
 
     all_traces: list[CurveTrace] = []
+    layouts: list[PageLayout] = []
     for i in pages:
         pv = extract_page(reader, i)
-        all_traces.extend(traces_from_page(
+        page_traces = traces_from_page(
             pv, headers=doc_headers,
             mnemonic_colors=mnemonic_colors,
             mnemonic_styles=mnemonic_styles,
-        ))
+        )
+        all_traces.extend(page_traces)
+        layouts.append(detect_page_layout(pv, traces=page_traces))
     stitched = stitch_traces(all_traces)
     # Fill units from headers when missing.
     h_units = {h.mnemonic: h.unit for h in doc_headers}
@@ -174,8 +184,9 @@ def digitize_pdf(
         if not t.unit:
             t.unit = h_units.get(t.mnemonic, "")
     log = DigitizedLog(
-        traces=stitched, well=well, headers=doc_headers,
-        info={"pages": pages, "n_raw_traces": len(all_traces), "n_headers": len(doc_headers)},
+        traces=stitched, well=well, headers=doc_headers, layouts=layouts,
+        info={"pages": pages, "n_raw_traces": len(all_traces), "n_headers": len(doc_headers),
+              "axes": [L.axis for L in layouts]},
     )
     log.resample(step=step)
     return log

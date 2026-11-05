@@ -13,9 +13,12 @@ from pylogdigitizer.scale_calibration import ScaleMap, linear_scale, log_scale
 from pylogdigitizer.pdf_vector.extract import TextItem, Stroke
 
 
-_DEPTH_RE = re.compile(r"^(\d{2,5})$")
+_DEPTH_RE = re.compile(r"^(\d{1,5})$")
 _SCALE_RE = re.compile(
-    r"^\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+([A-Za-z0-9./%°°-]+)\s*$"
+    r"^\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9./%°°^_\-\s]*)\s*$"
+)
+_SCALE_SINGLE_RE = re.compile(
+    r"^\s*(-?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9./%°°^_\-]*)\s*$"
 )
 _CURVE_PAREN_RE = re.compile(r"\(([A-Z][A-Z0-9_]{1,15})\)")
 _CURVE_TOKEN_RE = re.compile(r"\b([A-Z]{2,}[A-Z0-9_]{0,12})\b")
@@ -52,38 +55,114 @@ class TrackFrame:
 
 
 def parse_scale_label(text: str) -> tuple[float, float, str, str] | None:
-    """Parse ``0 200 gAPI`` / ``0.2 2000 ohm.m`` → (v_left, v_right, unit, kind)."""
-    m = _SCALE_RE.match(text.replace("\n", " ").strip())
+    """Parse ``0 200 gAPI`` / ``0.2 2000 ohm.m`` → (v_left, v_right, unit, kind).
+
+    Also handles USGS digital-print quirks such as ``48 In`` (extracted without a
+    space) meaning ``4 8 In`` for shallow caliper tracks.
+    """
+    raw = text.replace("\n", " ").strip()
+    m = _SCALE_RE.match(raw)
     if not m:
+        m1 = _SCALE_SINGLE_RE.match(raw)
+        if m1:
+            num, unit = m1.group(1), m1.group(2)
+            unit_l = unit.lower().replace("°", "")
+            # Two-digit int + inch → split into left/right digit ends (4 8 In, 7 9 In).
+            if num.isdigit() and len(num) == 2 and unit_l.startswith("in"):
+                v0, v1 = float(num[0]), float(num[1])
+                if v0 < v1:
+                    return v0, v1, unit, "linear"
         return None
     v0, v1 = float(m.group(1)), float(m.group(2))
     unit = m.group(3)
-    unit_l = unit.lower().replace("°", "")
+    unit = unit.strip()
+    unit_l = unit.lower().replace("°", "").replace(" ", "")
     span_ratio = max(abs(v0), abs(v1), 1e-12) / max(min(abs(v0), abs(v1)), 1e-12)
-    logish = ("ohm" in unit_l) or (v0 > 0 and v1 > 0 and span_ratio >= 50)
+    # Log only for resistivity-like units (or explicit ohm). Span alone is not enough
+    # (USGS "3 300 Ft^2/d" is linear transmissivity).
+    logish = ("ohm" in unit_l) or unit_l in {"ohmm", "ohm.m", "ohm-m"}
     if logish and v0 > 0 and v1 > 0:
+        return v0, v1, unit, "log"
+    if (not unit_l) and v0 > 0 and v1 > 0 and span_ratio >= 50:
         return v0, v1, unit, "log"
     return v0, v1, unit, "linear"
 
 
-def _depth_label_pairs(texts: list[TextItem]) -> list[tuple[float, float, float]]:
+def _depth_label_pairs(
+    texts: list[TextItem],
+    min_depth: float = 0.0,
+    max_depth: float = 50000.0,
+) -> list[tuple[float, float, float]]:
     out = []
     for t in texts:
         m = _DEPTH_RE.match(t.text.strip())
         if not m:
             continue
         d = float(m.group(1))
-        if d < 50 or d > 50000:
+        if d < min_depth or d > max_depth:
             continue
         out.append((t.x, t.y, d))
     return out
 
 
-def depth_map_from_labels(texts: list[TextItem], min_labels: int = 3) -> DepthMap | None:
-    """DepthMap from numeric depth-column labels. Uses -y as row (PDF y up, depth down)."""
-    pairs = _depth_label_pairs(texts)
+def detect_depth_axis(texts: list[TextItem], min_labels: int = 4) -> str:
+    """Return ``"x"`` for horizontal digital prints (depth left→right) else ``"y"``.
+
+    USGS GeoLog Locator exports often place depth along the page bottom; Schlumberger
+    / FORGE-style prints keep depth vertical. Detection uses the span of numeric
+    depth tick labels only — no fudge offsets.
+    """
+    pairs = _depth_label_pairs(texts, min_depth=0.0)
+    if len(pairs) < min_labels:
+        return "y"
+    xs = np.array([p[0] for p in pairs], float)
+    ys = np.array([p[1] for p in pairs], float)
+    if float(np.ptp(xs)) > 2.0 * max(float(np.ptp(ys)), 1.0) and float(np.ptp(xs)) > 80:
+        return "x"
+    return "y"
+
+
+def depth_map_from_labels(
+    texts: list[TextItem],
+    min_labels: int = 3,
+    axis: str | None = None,
+) -> DepthMap | None:
+    """DepthMap from numeric depth tick labels.
+
+    Vertical prints (``axis="y"``, default): ``row = -y`` (PDF y up, depth down).
+    Horizontal digital prints (``axis="x"``): ``row = x`` (depth left→right).
+    """
+    axis = axis or detect_depth_axis(texts, min_labels=min(min_labels, 4))
+    # Shallow USGS wells label 0, 10, 20… — allow depths from 0 on either axis.
+    pairs = _depth_label_pairs(texts, min_depth=0.0)
+    # Keep oilfield vertical logs from grabbing random small integers by requiring
+    # a deep-enough span when axis is vertical and many large depths exist.
+    if axis == "y":
+        deep = [p for p in pairs if p[2] >= 50]
+        if len(deep) >= min_labels:
+            pairs = deep
     if len(pairs) < min_labels:
         return None
+
+    if axis == "x":
+        # Depth ticks along the bottom: use x as the DepthMap row coordinate.
+        col = sorted(pairs, key=lambda p: p[0])
+        xs = np.array([p[0] for p in col], float)
+        ds = np.array([p[2] for p in col], float)
+        keep = [0]
+        for i in range(1, len(ds)):
+            if ds[i] > ds[keep[-1]] + 0.05:
+                keep.append(i)
+        xs, ds = xs[keep], ds[keep]
+        if len(xs) < min_labels:
+            return None
+        order = np.argsort(xs)
+        return DepthMap(
+            rows=xs[order], depths=ds[order],
+            info={"n_labels": int(len(ds)), "axis": "x", "source": "pdf_text",
+                  "y_col": float(np.median([p[1] for p in col]))},
+        )
+
     xs = np.array([p[0] for p in pairs], float)
     x_med = float(np.median(xs))
     hist, edges = np.histogram(xs, bins=max(5, len(xs) // 2))
@@ -114,7 +193,8 @@ def depth_map_from_labels(texts: list[TextItem], min_labels: int = 3) -> DepthMa
     rows = -ys
     order = np.argsort(rows)
     return DepthMap(rows=rows[order], depths=ds[order],
-                    info={"n_labels": int(len(ds)), "x_col": x_med, "source": "pdf_text"})
+                    info={"n_labels": int(len(ds)), "x_col": x_med, "axis": "y",
+                          "source": "pdf_text"})
 
 
 def _mnemonic_from_title(text: str) -> tuple[str, str] | None:
@@ -123,56 +203,94 @@ def _mnemonic_from_title(text: str) -> tuple[str, str] | None:
         return m.group(1), text
     toks = _CURVE_TOKEN_RE.findall(text)
     cand = [tok for tok in toks if tok not in _SKIP_TITLE and len(tok) >= 2]
-    if not cand:
+    if cand:
+        return cand[0], text
+    # USGS digital prints use mixed-case titles: "Gamma", "Fl cond amb", "Caliper".
+    # Require lowercase so ALL-CAPS Schlumberger titles (CABLE DRAG, TOOL TOTAL, …)
+    # do not invent extra mnemonics that steal legend styles from (TENS)/(MTEM).
+    cleaned = text.strip()
+    if not re.search(r"[a-z]", cleaned):
         return None
-    return cand[0], text
+    if parse_scale_label(cleaned) is not None:
+        return None
+    if not re.search(r"[A-Za-z]{3,}", cleaned):
+        return None
+    if cleaned.lower() in {
+        "depth", "optical image", "acoustic image", "gamma image",
+        "dip, in degrees", "water level", "trans",
+    }:
+        return None
+    if any(ch in cleaned for ch in "°"):
+        return None
+    mnem = re.sub(r"[^A-Za-z0-9]+", "_", cleaned).strip("_").upper()
+    if len(mnem) < 3 or len(mnem) > 24:
+        return None
+    return mnem, cleaned
 
 
 def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
-    """Pair each curve title with the scale label immediately below it (same x band)."""
+    """Pair each curve title with the scale label immediately below it (same x band).
+
+    Pass 1 prefers Schlumberger-style titles with ``(MNEM)`` or ALL-CAPS tokens.
+    Pass 2 fills remaining scales with USGS mixed-case titles (``Gamma``, …
+    ``Cable Drag`` must not steal the ``(TENS)`` scale).
+    """
     items = sorted(texts, key=lambda t: (-t.y, t.x))
-    headers: list[CurveHeader] = []
-    used_scale_idx: set[int] = set()
-    for i, t in enumerate(items):
-        parsed = _mnemonic_from_title(t.text)
-        if not parsed:
-            continue
-        if t.size and t.size < 9 and "(" not in t.text and " " not in t.text:
-            continue
-        mnem, title = parsed
-        best = None
-        for j in range(i + 1, min(len(items), i + 12)):
-            if j in used_scale_idx:
+
+    def _is_usgs_title(text: str) -> bool:
+        return bool(re.search(r"[a-z]", text)) and "(" not in text
+
+    def _pair(pass_usgs: bool, used_scale_idx: set[int]) -> list[CurveHeader]:
+        headers: list[CurveHeader] = []
+        for i, t in enumerate(items):
+            parsed = _mnemonic_from_title(t.text)
+            if not parsed:
                 continue
-            s = items[j]
-            if t.y - s.y > 50 or s.y > t.y + 2:
+            usgs = _is_usgs_title(t.text)
+            if pass_usgs != usgs:
                 continue
-            if abs(s.x - t.x) > 220:
+            # Schlumberger titles are large; USGS digital-print titles often report size≈1.
+            if t.size and t.size < 9 and "(" not in t.text and " " not in t.text and t.size >= 3:
                 continue
-            sc = parse_scale_label(s.text)
-            if sc is None:
+            mnem, title = parsed
+            best = None
+            for j in range(i + 1, min(len(items), i + 12)):
+                if j in used_scale_idx:
+                    continue
+                s = items[j]
+                if t.y - s.y > 50 or s.y > t.y + 2:
+                    continue
+                if abs(s.x - t.x) > 220:
+                    continue
+                sc = parse_scale_label(s.text)
+                if sc is None:
+                    continue
+                dist = (t.y - s.y) + 0.05 * abs(s.x - t.x)
+                if best is None or dist < best[0]:
+                    best = (dist, j, sc, s)
+            if best is None:
                 continue
-            dist = (t.y - s.y) + 0.05 * abs(s.x - t.x)
-            if best is None or dist < best[0]:
-                best = (dist, j, sc, s)
-        if best is None:
-            continue
-        _, j, sc, s = best
-        used_scale_idx.add(j)
-        v0, v1, unit, kind = sc
-        headers.append(CurveHeader(mnemonic=mnem, v_left=v0, v_right=v1, unit=unit,
-                                   kind=kind, x=s.x, y=s.y, descr=title))
+            _, j, sc, s = best
+            used_scale_idx.add(j)
+            v0, v1, unit, kind = sc
+            headers.append(CurveHeader(mnemonic=mnem, v_left=v0, v_right=v1, unit=unit,
+                                       kind=kind, x=s.x, y=s.y, descr=title))
+        return headers
+
+    used: set[int] = set()
+    headers = _pair(False, used) + _pair(True, used)
     seen: set[str] = set()
     out = []
     bad_prefix = ("TIME_", "DATE", "ONE", "LOG", "MAX_", "MIN_")
     for h in headers:
         if h.mnemonic in seen:
             continue
-        if h.mnemonic.startswith(bad_prefix) or h.mnemonic in {"MAIN", "REPEAT", "TO"}:
+        if h.mnemonic.startswith(bad_prefix) or h.mnemonic in {"MAIN", "REPEAT", "TO", "DRAG"}:
             continue
         seen.add(h.mnemonic)
         out.append(h)
     return out
+
 
 
 def legend_styles_from_strokes(
@@ -295,8 +413,12 @@ def parse_well_header(texts: list[TextItem] | str) -> dict[str, str]:
         key = t_.text.strip().rstrip(":").lower()
         if key in labels and labels[key] not in well and i + 1 < len(items):
             val = items[i + 1].text.strip()
-            if val and not val.endswith(":"):
-                well[labels[key]] = val
+            if not val or val.endswith(":"):
+                continue
+            # USGS form pages interleave labels; reject tool-run / long junk.
+            if labels[key] == "CNTY" and ("tool" in val.lower() or len(val) > 30):
+                continue
+            well[labels[key]] = val
     if "DATE" not in well:
         m_ = re.search(r"\b([0-9]{2}-[A-Za-z]{3}-[0-9]{4})\b", blob)
         if m_:
@@ -312,6 +434,44 @@ def parse_well_header(texts: list[TextItem] | str) -> dict[str, str]:
         m_ = re.search(pat, blob, re.I)
         if m_:
             well[key] = m_.group(1)
+    # USGS GeoLog Locator header forms: label text beside value, not "Well:".
+    if "WELL" not in well:
+        for i, t_ in enumerate(items):
+            lab = t_.text.strip().rstrip(":").lower()
+            if lab in {"station name (c12)", "station name"} and i + 1 < len(items):
+                well["WELL"] = items[i + 1].text.strip()
+                break
+        if "WELL" not in well:
+            m_ = re.search(r"\b(Ro[- ]?\d+\s*\([^)]+\)|Ro[- ]?\d+)\b", blob)
+            if m_:
+                well["WELL"] = m_.group(1).strip()
+    if "COMP" not in well and re.search(r"\bUSGS\b", blob):
+        well["COMP"] = "USGS"
+    if "SRVC" not in well and re.search(r"\bUSGS\b", blob):
+        well["SRVC"] = "USGS"
+    if "UWI" not in well:
+        m_ = re.search(r"\b(\d{15})\b", blob)
+        if m_:
+            well["UWI"] = m_.group(1)
+    if "DATE" not in well:
+        m_ = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", blob)
+        if m_:
+            well["DATE"] = m_.group(1)
+    if "CNTY" not in well:
+        for i, t_ in enumerate(items):
+            if t_.text.strip().rstrip(":").lower() == "county" and i + 1 < len(items):
+                # Avoid grabbing a later "Tool run" label; take short token.
+                val = items[i + 1].text.strip()
+                if val and len(val) < 40 and "tool" not in val.lower():
+                    well["CNTY"] = val
+                break
+    if "STAT" not in well:
+        for i, t_ in enumerate(items):
+            if t_.text.strip().rstrip(":").lower() == "state" and i + 1 < len(items):
+                val = items[i + 1].text.strip()
+                if val and len(val) <= 3:
+                    well["STAT"] = val
+                break
     return well
 
 
