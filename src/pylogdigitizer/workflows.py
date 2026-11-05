@@ -187,7 +187,8 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             vec = vz.vector_separate(pan, n_curves=nc)
         else:     # linked chains; text is decided on vectors, so the raster text mask is off
             vec = vz.vector_separate_v2(pan, n_curves=nc)
-            trace_kw["mask_other"] = False
+            if vmode != "v2_mask":
+                trace_kw["mask_other"] = False
             checks["vector_rescued"] = vec["n_rescued"]; checks["vector_text_fixed"] = vec["n_text_fixed"]
         checks["vector_segments"] = int(sum(s is not None for s in vec["V"]["segs"]))
         checks["vector_grid_segments"] = int((vec["cls"] == vz.GRID).sum())
@@ -200,7 +201,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         checks["curve_scores"] = [round(float(t["score"]), 3) for t in T["candidates"]]
     else:
         T = ct.trace_track(tpan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
-    if vec is not None and vmode != "v1":
+    if vec is not None and vmode not in ("v1", "v2_nochain"):
         T = vz.apply_chains(T, vec, pan.shape, n_curves=nc)
         checks["vector_fallback_rows"] = int(T.get("vector_fallback", 0))
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)

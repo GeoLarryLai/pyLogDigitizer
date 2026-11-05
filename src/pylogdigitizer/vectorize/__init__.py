@@ -101,7 +101,20 @@ def _free_end(V: dict, s: dict, W: int, r: int = 3, edge: int = 4) -> bool:
         x0, x1 = max(0, xe - r), xe + r + 1
         win_l = lab[y0:y1, x0:x1]
         if not j[y0:y1, x0:x1].any() and not ((win_l > 0) & (win_l != s["id"])).any():
-            return True
+            # a broken grid row continues in line past the gap; a spike tip does not
+            sgn = 1 if xe == s["x1"] else -1
+            lo, hi = sorted((xe + sgn * 4, xe + sgn * 40))
+            row = V["skel"][max(0, s["y0"] - 1):s["y1"] + 2, max(0, lo):max(0, min(W, hi))]
+            if row.size and row.any(axis=0).mean() > 0.25:
+                continue
+            # the other end must touch a non-horizontal stroke (the curve the spike leaves from)
+            xo = s["x0"] if xe == s["x1"] else s["x1"]
+            yo0, yo1 = max(0, s["y0"] - 4), s["y1"] + 5
+            wo = lab[yo0:yo1, max(0, xo - 4):xo + 5]
+            ids = np.unique(wo[(wo > 0) & (wo != s["id"])])
+            if any(V["segs"][k]["angle"] < 60 and not (V["segs"][k]["straight"] > 0.9 and V["segs"][k]["angle"] < 6
+                                                      and V["segs"][k]["h"] >= 20) for k in ids):
+                return True
     return False
 
 
@@ -135,6 +148,12 @@ def classify_segments(V: dict, ink: np.ndarray, grid: np.ndarray, bands=(), othe
     vk = max(3, 2 * int(max_grid_width) + 1)
     vcov = np.convolve(vcov, np.ones(vk), mode="same")
     vcols = cv2.dilate((vcov >= col_cover * H).astype(np.uint8)[None], np.ones((1, vk), np.uint8))[0].astype(bool)
+    # horizontal-line coverage per row (straight near-horizontal segments, +-1 row): a grid row is
+    # many collinear pieces between columns; a spike is alone in its row
+    hcov = np.zeros(ink.shape[0] + 2, float)
+    for s in V["segs"]:
+        if s is not None and s["angle"] > 82 and s["straight"] > 0.9 and s["h"] <= 6:
+            hcov[s["y0"]:s["y1"] + 3] += s["w"]
     cls = np.zeros(len(V["segs"]), np.int8)
     for s in V["segs"]:
         if s is None:
@@ -148,6 +167,8 @@ def classify_segments(V: dict, ink: np.ndarray, grid: np.ndarray, bands=(), othe
             c = GRID      # piece of a persistent vertical line (thick reference lines too)
         elif vert and thin and (s["h"] >= long_v or (colsd[s["x0"]:s["x1"] + 1].all() and s["on_grid"] > 0.5)):
             c = GRID
+        elif hor and hcov[s["y0"]:s["y1"] + 3].max() - s["w"] >= 0.3 * W:
+            c = GRID      # piece of a grid row (other collinear pieces fill the row)
         elif hor and s["w"] < 0.9 * W and _free_end(V, s, W):
             c = CURVE     # horizontal stroke ending in paper inside the track: a spike, not a grid row
         elif hor and (s["w"] >= long_h or (brow[s["y0"]:s["y1"] + 1].all() and s["w"] >= 6)):
@@ -465,12 +486,15 @@ def chain_groups(chains: list, n_curves: int, min_n: int = 30) -> np.ndarray:
 
 
 def chain_path(chains: list, groups: np.ndarray, shape, fy: int, target: int | None = None,
-               switch: float = 0.35, none_cost: float = 0.9, style_pen: float = 0.8, spike: float = 0.25) -> tuple:
+               switch: float = 0.35, none_cost: float = 0.9, style_pen: float = 0.8, spike: float = 0.25,
+               prior: np.ndarray | None = None, prior_w: float = 0.6, prior_px: float = 30.0) -> tuple:
     """Viterbi over sample rows (step ``fy``) choosing one linked chain per sample. States per
     sample: (chain, leftmost x) and (chain, rightmost x) of each chain in the rows, plus 'none'.
     Long chains and the ``target`` style group are cheap; staying on a chain is free, switching
     costs ``switch`` + distance; the extreme farther from the chain's local median is favoured
-    (keeps spike tips). Returns (x per sample, covered bool per sample, chain id per sample)."""
+    (keeps spike tips). ``prior``: x per sample (e.g. the raster tracer's candidate): chains whose
+    local median is far from it cost up to ``prior_w`` more, so the path keeps that curve's identity
+    when several curves share a style. Returns (x per sample, covered bool per sample, chain id per sample)."""
     H, W = shape
     ns = int(np.ceil(H / fy))
     per = [[] for _ in range(ns)]
@@ -489,6 +513,10 @@ def chain_path(chains: list, groups: np.ndarray, shape, fy: int, target: int | N
             lo, hi = float(x.min()), float(x.max())
             for xv in ((lo,) if hi - lo < 2 else (lo, hi)):
                 e = base - spike * min(1.0, abs(xv - med[j]) / 40.0)
+                if prior is not None:
+                    t0 = int(sv[0])
+                    if t0 < len(prior) and np.isfinite(prior[t0]):
+                        e += prior_w * min(1.0, abs(med[j] - prior[t0]) / prior_px)
                 per[int(sv[0])].append((c["id"], xv, e))
     cost = np.array([0.0]); xs_prev = np.array([np.nan]); id_prev = np.array([0])
     back = []
@@ -542,27 +570,21 @@ def vector_separate_v2(ink: np.ndarray, n_curves: int = 1) -> dict:
 
 
 def apply_chains(T: dict, vec: dict, shape, n_curves: int = 1) -> dict:
-    """Replace a tracer result's x by linked-chain paths. Single curve: one path over all chains.
-    Several: one path per style group; each tracer candidate takes the group path that agrees with it
-    most. Samples no chain covers keep the tracer's x (``vector_fallback`` counts them)."""
+    """Replace each tracer candidate's x by a linked-chain path that keeps the candidate's curve
+    identity (its x is the Viterbi prior); positions, spikes and gaps come from the chains. Samples no chain covers keep the tracer's x (``vector_fallback`` counts them)."""
     cands = T.get("candidates") or [T]
     fy = int(T["fy"])
-    ng = max(1, int(vec["groups"].max()) + 1) if len(vec["groups"]) else 1
-    paths = [chain_path(vec["chains"], vec["groups"], shape, fy, target=(k if n_curves > 1 else None))
-             for k in range(ng if n_curves > 1 else 1)]
-    used = set()
     for t in cands:
         n = len(t["x"]); tx = np.asarray(t["x"], float)
-        best, bk = None, 0
-        for k, (x, cov, _) in enumerate(paths):
-            m = cov[:n]
-            if not m.any():
-                continue
-            agree = float(np.mean(np.abs(x[:n][m] - tx[:len(m)][m]) < 8)) - (0.5 if k in used else 0.0)
-            if best is None or agree > best:
-                best, bk = agree, k
-        used.add(bk)
-        x, cov, cid = paths[bk]
+        pr = tx.copy(); pr[np.asarray(t["off_left"]) | np.asarray(t["off_right"])] = np.nan
+        x, cov, cid = chain_path(vec["chains"], vec["groups"], shape, fy, target=None, prior=pr)
+        # style group of the chains this path uses most (for reporting)
+        ids = cid[cov[:len(cid)]]
+        bk = -1
+        if ids.size:
+            gl = vec["groups"][np.clip(ids - 1, 0, len(vec["groups"]) - 1)]
+            gl = gl[gl >= 0]
+            bk = int(np.bincount(gl).argmax()) if gl.size else -1
         m = cov[:n]
         fx = t["fx"]; pad = t["pad"]
         newx = tx.copy(); newx[m] = x[:n][m]

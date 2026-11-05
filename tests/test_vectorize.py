@@ -126,3 +126,17 @@ def test_chain_path_keeps_spike_tip():
     R = vz.vector_separate_v2(ink, n_curves=1)
     x, cov, _ = vz.chain_path(R["chains"], R["groups"], ink.shape, 1)
     assert cov.mean() > 0.95 and np.nanmax(x) > 150
+
+
+def test_broken_grid_row_stays_grid():
+    ink = np.zeros((300, 300), bool)
+    for y in range(300):
+        x0 = int(150 + 10 * np.sin(y / 20.0)); ink[y, x0:x0 + 3] = True
+    for x in (30, 90, 210, 270):
+        ink[:, x] = True
+    ink[100, :] = True
+    ink[100, 60:66] = False                          # small gaps in a grid row
+    ink[100, 236:242] = False
+    R = vz.vector_separate_v2(ink, n_curves=1)
+    row = R["curve_ink"][100]
+    assert row[:120].sum() <= 3 and row[190:].sum() <= 3
