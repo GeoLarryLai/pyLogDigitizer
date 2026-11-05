@@ -279,23 +279,34 @@ def _rows_mask(m: np.ndarray, fy: int, H: int) -> np.ndarray:
 
 def seeded_multi_trace(curve_ink: np.ndarray, fy: int, n: int = 2, seed_len: int = 6,
                        cross_px: float | None = None, cross_len: int = 15, collapse_px: float = 6.0,
-                       collapse_len: int = 40, **kw):
+                       collapse_len: int = 40, class_inks: list | None = None, **kw):
     """Trace ``n`` curves on curve ink from independent seeds (not from another tracer's picks).
     Curves are traced widest first. A later curve may use ink already claimed by an earlier one only
     inside short windows (<= ``cross_len`` samples) where its own first pass comes within
     ``cross_px`` of that curve (a true crossing); longer shared stretches are excluded. Where a later
     curve still collapses onto an earlier one (within ``collapse_px`` for >= ``collapse_len``
     samples) or loses ink that long, it is re-seeded from free ink at the start of that stretch and
-    re-traced there. Returns a list of dict(x, width, gap_frac, seed_x, seed_sample, reseeds)."""
+    re-traced there. With ``class_inks`` (one ink mask per curve class from the identity segmenter)
+    each curve is seeded and traced on its own class ink, in the given order. Returns a list of dict(x, width, gap_frac, seed_x, seed_sample, reseeds)."""
     H, W = curve_ink.shape
     ns = -(-H // fy)
-    sd = find_seeds(curve_ink, fy, n)
-    if sd is None:
-        return []
-    s, seeds = sd
+    if class_inks is not None:        # per-curve ink from a curve-identity segmenter: one seed per class
+        n = len(class_inks); seeds = []
+        for ci in class_inks:
+            sd1 = find_seeds(ci, fy, 1, window=ns)
+            if sd1 is None:
+                return []
+            seeds.append((sd1[0], sd1[1][0]))
+    else:
+        sd = find_seeds(curve_ink, fy, n)
+        if sd is None:
+            return []
+        seeds = [(sd[0], p_) for p_ in sd[1]]
     claimed = np.zeros((H, W), bool); out = []
-    B = band_ink(curve_ink, fy, ns, dilate=1)
-    for x0, w0 in seeds:
+    for k_, (s, (x0, w0)) in enumerate(seeds):
+        if class_inks is not None:
+            curve_ink = class_inks[k_]
+        B = band_ink(curve_ink, fy, ns, dilate=1)
         pr = np.full(ns, np.nan); pr[s:s + seed_len] = x0
         reseeds = 0
         if not out:

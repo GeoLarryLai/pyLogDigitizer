@@ -184,7 +184,8 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True), the panel ("panel") or the segmenter's curve ink ("model")
     seg_model = trace_kw.pop("seg_model", None)
     seed_curves = trace_kw.pop("seed_curves", False)
-    seed_role = trace_kw.pop("seed_role", None)        # line style of the wanted curve when no legend: dashed/solid/thick/thin
+    seed_role = trace_kw.pop("seed_role", None)
+    class_role = trace_kw.pop("class_role", None)      # identity model: "A" (heavier/solid) or "B" (lighter/patterned) is this curve        # line style of the wanted curve when no legend: dashed/solid/thick/thin
     clip_null = trace_kw.pop("clip_null", None)        # null where the curve is clipped at the track edge (default: on with "model")    # with "model": independent seeds for multi-curve tracks
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
@@ -221,8 +222,29 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             cp = curve_probability(pan, seg_model)
             cink = np.asarray(pan, bool) & (cp > 0.5)
             cands = T.get("candidates") or [T]
-            seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if (len(cands) > 1 and seed_curves) else []
-            if len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
+            seeded = []
+            if class_role and len(cands) == 2:     # curve-identity segmenter: seed + trace each class on its own ink
+                from pylogdigitizer.scan_segmenter import curve_class_probability
+                pab = curve_class_probability(pan, seg_model)
+                if pab is None:
+                    raise ValueError("class_role needs a curve-identity seg_model (curveA/curveB outputs)")
+                ia = cink & (pab[0] >= pab[1]); ib = cink & (pab[1] > pab[0])
+                want, other = (ib, ia) if class_role == "B" else (ia, ib)
+                seeded = at.seeded_multi_trace(cink, int(T["fy"]), 2, class_inks=[want, other])
+                if len(seeded) == 2:
+                    pi = cands.index(T) if T in cands else 0
+                    seeded = [seeded[1], seeded[0]] if pi == 1 else seeded
+                    checks["class_frac"] = [round(float(ia.mean()), 4), round(float(ib.mean()), 4)]
+            elif len(cands) > 1 and seed_curves:
+                seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands))
+            if len(seeded) == len(cands) and class_role:
+                for t, sd in zip(cands, seeded):
+                    nx = sd["x"][:len(t["x"])]
+                    t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
+                    at._set_x(t, nx, np.ones(len(nx), bool))
+                checks["seeded"] = [round(float(sd["seed_x"]), 1) for sd in seeded]
+                checks["reseeds"] = [sd["reseeds"] for sd in seeded]
+            elif len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
                 order = at.match_to(cands, seeded)
                 if seed_role:     # identity from line style: the wanted style goes to the picked candidate
                     k = at.role_by_style(seeded, seed_role); pi = cands.index(T) if T in cands else 0

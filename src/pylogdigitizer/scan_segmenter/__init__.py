@@ -62,3 +62,13 @@ def curve_probability(ink: np.ndarray, model_path: str, **kw) -> np.ndarray:
     p = segment_scan(ink, model_path, **kw)
     names = classes_for(p.shape[0])
     return sum(p[i] for i, n in enumerate(names) if n.startswith("curve")).astype(np.float32)
+
+
+def curve_class_probability(ink: np.ndarray, model_path: str, **kw):
+    """(P(curveA), P(curveB)) per pixel for a curve-identity model (5 outputs; A = the heavier / solid
+    stroke style, B = the lighter / patterned one, learned from appearance only), else None."""
+    p = segment_scan(ink, model_path, **kw)
+    names = classes_for(p.shape[0])
+    if "curveA" not in names:
+        return None
+    return p[names.index("curveA")].astype(np.float32), p[names.index("curveB")].astype(np.float32)
