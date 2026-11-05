@@ -85,4 +85,30 @@ def test_classify_distinguishes_grid_and_curve():
         color=(0.0, 0.75, 0.0), width=3.0,
     )
     gh, gv, curves = classify_strokes([grid, curve])
-    assert len(gv) == 1 and (0.0, 0.75, 0.0) in curves
+    assert len(gv) == 1 and len(curves) == 1
+    assert curves[0].color == (0.0, 0.75, 0.0)
+
+
+def test_style_distance_and_unwrap():
+    from pylogdigitizer.pdf_vector.calibrate import style_distance
+    from pylogdigitizer.pdf_vector.assemble import unwrap_log_wraps
+    # Same colour, different width/dash → distinguishable.
+    d_same = style_distance((0, 0, 0), 5.0, (), (0, 0, 0), 5.0, ())
+    d_width = style_distance((0, 0, 0), 5.0, (), (0, 0, 0), 3.0, ())
+    d_dash = style_distance((0, 0, 0), 3.0, (9.0, 19.0), (0, 0, 0), 3.0, ())
+    assert d_same < d_width < 1.0
+    assert d_dash > d_same
+
+    # Fake wrap: left→mid then jump to left again after right edge.
+    scale = ScaleMap(0, 100, 0.2, 2000, "log")
+    # Decade = 10000; mid x=50 → geometric mid.
+    xs = np.array([20.0, 40.0, 98.0, 1.0, 30.0])
+    ys = np.array([500.0, 480.0, 460.0, 440.0, 420.0])
+    pts = np.column_stack([xs, ys])
+    vals = unwrap_log_wraps(pts, scale, edge_tol=3.0)
+    # Edge samples null; after wrap, values should jump by ~decade vs unwrapped base.
+    assert np.isnan(vals[2]) and np.isnan(vals[3])
+    assert np.isfinite(vals[0]) and np.isfinite(vals[1]) and np.isfinite(vals[4])
+    # Point after wrap (index 4) should be > one decade above its unwrapped scale value.
+    base4 = float(scale(np.array([30.0]))[0])
+    assert vals[4] > base4 * 50  # at least ~one decade up

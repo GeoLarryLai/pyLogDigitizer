@@ -14,7 +14,7 @@ from pylogdigitizer.pdf_vector.extract import extract_page
 from pylogdigitizer.pdf_vector.calibrate import (
     parse_well_header,
     parse_curve_headers,
-    legend_colors_from_strokes,
+    legend_styles_from_strokes,
     CurveHeader,
 )
 from pylogdigitizer.pdf_vector.assemble import traces_from_page, stitch_traces, CurveTrace
@@ -84,24 +84,42 @@ def _log_pages(reader: PdfReader) -> list[int]:
 
 
 def _collect_headers(reader: PdfReader, page_indices: list[int]) -> list[CurveHeader]:
-    """Gather curve headers from candidate pages (legend + log pages); first wins per mnemonic."""
+    """Gather curve headers; apply legend styles from the richest matching page only."""
+    from dataclasses import replace as _dc_replace
+
+    order = list(dict.fromkeys(
+        list(range(max(0, len(reader.pages) - 5), len(reader.pages)))
+        + sorted(page_indices, reverse=True)
+        + list(range(min(5, len(reader.pages))))
+        + list(page_indices)
+    ))
     seen: set[str] = set()
     out: list[CurveHeader] = []
-    # Prefer last pages (Schlumberger puts the scale legend in the tail) then first pages.
-    order = list(dict.fromkeys(sorted(page_indices, reverse=True) + list(range(min(5, len(reader.pages))))
-                               + list(range(max(0, len(reader.pages) - 5), len(reader.pages)))))
+    best_styles: dict[str, dict] = {}
+    best_n = 0
     for i in order:
         pv = extract_page(reader, i)
-        for h in parse_curve_headers(pv.texts):
+        page_headers = parse_curve_headers(pv.texts)
+        for h in page_headers:
             if h.mnemonic in seen:
                 continue
             seen.add(h.mnemonic)
             out.append(h)
-        # Attach legend colours when swatches exist on this page.
-        cols = legend_colors_from_strokes([h for h in out if h.color is None], pv.strokes)
-        for h in out:
-            if h.color is None and h.mnemonic in cols:
-                h.color = cols[h.mnemonic]
+        probe = [_dc_replace(h) for h in page_headers]
+        got = legend_styles_from_strokes(probe, pv.strokes)
+        # Prefer the page that resolves the most swatches (true legend / header bar).
+        if len(got) > best_n:
+            best_n = len(got)
+            best_styles = got
+    if best_n >= 3:
+        by = {h.mnemonic: h for h in out}
+        for mnem, style in best_styles.items():
+            h = by.get(mnem)
+            if h is None:
+                continue
+            h.color = style["color"]
+            h.width = style["width"]
+            h.dash = style["dash"]
     return out
 
 
@@ -110,6 +128,7 @@ def digitize_pdf(
     pages: list[int] | None = None,
     step: float = 0.5,
     mnemonic_colors: dict[str, tuple[float, float, float]] | None = None,
+    mnemonic_styles: dict[str, dict] | None = None,
     well_extra: dict[str, str] | None = None,
     headers: list[CurveHeader] | None = None,
 ) -> DigitizedLog:
@@ -120,7 +139,8 @@ def digitize_pdf(
     path : PDF path
     pages : 0-based indices; ``None`` auto-selects pages with ≥4 depth labels
     step : LAS depth step — ``0.5`` (default) or ``0.25`` ft
-    mnemonic_colors : optional explicit mnemonic→RGB map
+    mnemonic_colors : optional explicit mnemonic→RGB map (fallback; prefer styles)
+    mnemonic_styles : optional mnemonic→{color,width,dash} override
     well_extra : extra / override WELL header fields
     headers : optional pre-parsed curve headers (else harvested from legend pages)
     """
@@ -138,14 +158,15 @@ def digitize_pdf(
         well.update(well_extra)
 
     doc_headers = headers if headers is not None else _collect_headers(reader, pages)
-    colors = {h.mnemonic: h.color for h in doc_headers if h.color is not None}
-    if mnemonic_colors:
-        colors.update(mnemonic_colors)
 
     all_traces: list[CurveTrace] = []
     for i in pages:
         pv = extract_page(reader, i)
-        all_traces.extend(traces_from_page(pv, headers=doc_headers, mnemonic_colors=colors or None))
+        all_traces.extend(traces_from_page(
+            pv, headers=doc_headers,
+            mnemonic_colors=mnemonic_colors,
+            mnemonic_styles=mnemonic_styles,
+        ))
     stitched = stitch_traces(all_traces)
     # Fill units from headers when missing.
     h_units = {h.mnemonic: h.unit for h in doc_headers}

@@ -20,8 +20,9 @@ from pylogdigitizer.pdf_vector.calibrate import (
     is_near_white,
     depth_map_from_labels,
     parse_curve_headers,
-    legend_colors_from_strokes,
+    legend_styles_from_strokes,
     tracks_from_grids,
+    style_distance,
 )
 
 
@@ -38,29 +39,29 @@ class CurveTrace:
     info: dict = field(default_factory=dict)
 
 
-def classify_strokes(strokes: list[Stroke]) -> tuple[list[Stroke], list[Stroke], dict[tuple, list[Stroke]]]:
+def classify_strokes(strokes: list[Stroke]) -> tuple[list[Stroke], list[Stroke], list[Stroke]]:
+    """Return (grid_h, grid_v, body_curve_strokes). Curves keep full style (colour/width/dash)."""
     grid_h: list[Stroke] = []
     grid_v: list[Stroke] = []
-    curves: dict[tuple, list[Stroke]] = defaultdict(list)
+    curves: list[Stroke] = []
     for s in strokes:
         if len(s.pts) < 2:
             continue
         dx = float(np.ptp(s.pts[:, 0]))
         dy = float(np.ptp(s.pts[:, 1]))
-        col = colour_key(s.color)
         if is_near_black(s.color) and dy < 1.5 and dx > 30 and not s.dash:
             grid_h.append(s)
         elif is_near_black(s.color) and dx < 1.5 and dy > 30 and not s.dash:
             grid_v.append(s)
         elif is_near_white(s.color):
             if len(s.pts) >= 8 and dy > 30:
-                curves[col].append(s)
+                curves.append(s)
         elif is_near_gray(s.color) and not s.dash and s.width <= 1.5 and dy < 8:
             continue
         elif (not is_near_black(s.color) or bool(s.dash)) and len(s.pts) >= 5 and dy > 20:
-            curves[col].append(s)
+            curves.append(s)
         elif is_near_black(s.color) and not s.dash and s.width >= 2.5 and dy > 40 and dx > 5:
-            curves[col].append(s)
+            curves.append(s)
     return grid_h, grid_v, curves
 
 
@@ -81,8 +82,69 @@ def _points_to_series(
     return depth[order], value[order]
 
 
-def _color_dist(a: tuple[float, ...], b: tuple[float, ...]) -> float:
-    return sum((float(x) - float(y)) ** 2 for x, y in zip(a, b))
+def unwrap_log_wraps(
+    pts: np.ndarray,
+    scale: ScaleMap,
+    edge_tol: float = 2.0,
+) -> np.ndarray:
+    """For log tracks: when a stroke wraps right→left (or left→right), shift by one decade.
+
+    Returns a value array with decade offsets applied; edge samples stay NaN (clipped).
+    Assumes the stroke is ordered roughly by depth (descending PDF y).
+    """
+    if scale.kind != "log" or scale.v_left <= 0 or scale.v_right <= 0:
+        return np.asarray(scale(pts[:, 0]), float)
+
+    lo, hi = (scale.x_left, scale.x_right) if scale.x_left < scale.x_right else (scale.x_right, scale.x_left)
+    span = max(hi - lo, 1e-9)
+    decade = scale.v_right / scale.v_left
+    if decade <= 1:
+        decade = scale.v_left / scale.v_right
+
+    # Order by descending y (increasing depth on typical plots).
+    order = np.argsort(-pts[:, 1])
+    xs = pts[order, 0]
+    base = np.asarray(scale(xs), float)
+    edge_l = xs <= lo + edge_tol
+    edge_r = xs >= hi - edge_tol
+    wrap_offset = 0
+    out = base.copy()
+    for i in range(len(xs)):
+        if i > 0:
+            dx = xs[i] - xs[i - 1]
+            # Jump from near-right to near-left → +1 decade wrap.
+            if edge_r[i - 1] and edge_l[i] and dx < -0.4 * span:
+                wrap_offset += 1
+            elif edge_l[i - 1] and edge_r[i] and dx > 0.4 * span:
+                wrap_offset -= 1
+        if edge_l[i] or edge_r[i]:
+            out[i] = np.nan
+        else:
+            out[i] = base[i] * (decade ** wrap_offset)
+    # Restore original point order.
+    restored = np.empty_like(out)
+    restored[order] = out
+    return restored
+
+
+def _points_to_series_log_wrap(
+    pts: np.ndarray,
+    depth_map: DepthMap,
+    scale: ScaleMap,
+    clip_tol: float = 1.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    rows = -pts[:, 1]
+    depth = np.asarray(depth_map(rows), float)
+    if scale.kind == "log":
+        value = unwrap_log_wraps(pts, scale, edge_tol=clip_tol)
+    else:
+        value = np.asarray(scale(pts[:, 0]), float)
+        lo, hi = (scale.x_left, scale.x_right) if scale.x_left < scale.x_right else (scale.x_right, scale.x_left)
+        clipped = (pts[:, 0] <= lo + clip_tol) | (pts[:, 0] >= hi - clip_tol)
+        value = value.copy()
+        value[clipped] = np.nan
+    order = np.argsort(depth)
+    return depth[order], value[order]
 
 
 def _body_segs(segs: list[Stroke]) -> list[Stroke]:
@@ -90,67 +152,96 @@ def _body_segs(segs: list[Stroke]) -> list[Stroke]:
 
 
 def _frame_for_header(h: CurveHeader, frames: list[TrackFrame], page_width: float) -> TrackFrame:
-    for fr in frames:
-        if h in fr.curves or any(c.mnemonic == h.mnemonic for c in fr.curves):
-            return fr
-        if fr.x_left - 40 <= h.x <= fr.x_right + 10:
-            return fr
-    # Fabricate from header x: Schlumberger scale text sits near the left of its track.
-    # Guess track width ~180 pt (common on these plots).
-    width = 180.0
+    """Pick a plausible track for this header (prefer narrow frames over page-wide)."""
+    containing = [
+        fr for fr in frames
+        if fr.x_left - 40 <= h.x <= fr.x_right + 10
+        or any(c.mnemonic == h.mnemonic for c in fr.curves)
+    ]
+    # Prefer tracks of typical width (<280 pt). Giant frames are last resort.
+    narrow = [fr for fr in containing if (fr.x_right - fr.x_left) < 400]
+    if narrow:
+        return min(narrow, key=lambda fr: abs((fr.x_left + fr.x_right) / 2 - h.x))
+    if containing:
+        # Split a giant frame: left headers → [x_left, mid], right → [mid, x_right].
+        fr = min(containing, key=lambda fr: fr.x_right - fr.x_left)
+        if (fr.x_right - fr.x_left) > 400:
+            # Use nearest v-edge from other frames if any; else 180-pt default.
+            edges = sorted({f.x_left for f in frames} | {f.x_right for f in frames})
+            right_edge = next((e for e in edges if e > h.x + 30), None)
+            if right_edge and right_edge - max(fr.x_left, h.x - 5) < 400:
+                return TrackFrame(x_left=max(fr.x_left, 0.0), x_right=float(right_edge))
+            x0 = max(fr.x_left, h.x - 5) if h.x < 200 else h.x - 5
+            return TrackFrame(x_left=x0, x_right=min(page_width, x0 + 180.0))
+        return fr
     x0 = max(0.0, h.x - 5)
-    # If header is mid-page, track starts near header x.
-    if h.x > 150:
-        x0 = min([fr.x_left for fr in frames if fr.x_left >= 150], default=h.x - 5)
-        # Prefer known right-track left edge from frames.
-        rights = [fr for fr in frames if fr.x_left >= 150]
-        if rights:
-            return min(rights, key=lambda fr: abs(fr.x_left - h.x))
-    return TrackFrame(x_left=x0, x_right=min(page_width, x0 + width))
+    return TrackFrame(x_left=x0, x_right=min(page_width, x0 + 180.0))
 
 
 def _best_chain_for_header(
     h: CurveHeader,
     fr: TrackFrame,
-    curves: dict[tuple, list[Stroke]],
+    curves: list[Stroke],
     claimed: set[int],
 ) -> Stroke | None:
-    """Pick the longest unclaimed body stroke in this track matching the header colour."""
-    want = colour_key(h.color) if h.color is not None else None
+    """Pick the longest unclaimed body stroke in this track matching header style."""
     candidates: list[tuple[float, Stroke]] = []
-    for col, segs in curves.items():
-        if is_near_white(col):
+    for s in _body_segs(curves):
+        if id(s) in claimed:
             continue
-        if want is not None and not is_near_black(want):
-            if _color_dist(col, want) > 0.05:
+        if is_near_white(s.color):
+            continue
+        x_med = float(np.median(s.pts[:, 0]))
+        if not (fr.x_left - 5 <= x_med <= fr.x_right + 5):
+            continue
+        # Hard filters when legend style is known — length must not override style.
+        if h.color is not None and not is_near_black(h.color):
+            if sum((float(a) - float(b)) ** 2 for a, b in zip(s.color, h.color)) > 0.05:
                 continue
-        elif want is not None and is_near_black(want):
-            if not is_near_black(col):
+        elif h.color is not None and is_near_black(h.color):
+            if not is_near_black(s.color):
                 continue
-        elif want is None and is_near_black(col):
-            # Uncoloured header: allow black only for curves typically drawn black.
-            pass
-        elif want is None and not is_near_black(col):
-            # No colour hint — accept any non-white in track (weaker).
-            pass
-        for s in _body_segs(segs):
-            if id(s) in claimed:
-                continue
-            x_med = float(np.median(s.pts[:, 0]))
-            if not (fr.x_left - 5 <= x_med <= fr.x_right + 5):
-                continue
-            # Score: prefer matching colour, dashed black for backup styles, long chains, x span.
-            score = float(len(s.pts))
-            score += 0.5 * float(np.ptp(s.pts[:, 0]))
-            if want is not None:
-                score += 1000.0 * (1.0 - min(_color_dist(col, want), 1.0))
-            if is_near_black(col) and s.dash:
-                score += 50.0
-            candidates.append((score, s))
+        if h.dash is not None and bool(s.dash) != bool(h.dash):
+            continue
+        if h.width is not None and abs(s.width - h.width) > 1.5:
+            continue
+        dist = style_distance(
+            s.color, s.width, tuple(s.dash),
+            h.color, h.width, h.dash,
+        )
+        score = float(len(s.pts))
+        score += 0.5 * float(np.ptp(s.pts[:, 0]))
+        score += 5000.0 * (1.0 / (1.0 + dist))
+        if h.width is not None:
+            score += 200.0 * (1.0 - min(abs(s.width - h.width) / 5.0, 1.0))
+        candidates.append((score, s))
     if not candidates:
         return None
     candidates.sort(key=lambda t: -t[0])
     return candidates[0][1]
+
+
+def _apply_explicit_styles(
+    headers: list[CurveHeader],
+    mnemonic_colors: dict[str, tuple[float, float, float]] | None,
+    mnemonic_styles: dict[str, dict] | None,
+) -> None:
+    """Apply explicit overrides (fallback). Styles win over colour-only."""
+    if mnemonic_styles:
+        for h in headers:
+            st = mnemonic_styles.get(h.mnemonic)
+            if not st:
+                continue
+            if "color" in st:
+                h.color = tuple(float(c) for c in st["color"])
+            if "width" in st:
+                h.width = float(st["width"])
+            if "dash" in st:
+                h.dash = tuple(float(x) for x in st["dash"])
+    if mnemonic_colors:
+        for h in headers:
+            if h.mnemonic in mnemonic_colors and h.color is None:
+                h.color = tuple(float(c) for c in mnemonic_colors[h.mnemonic])
 
 
 def traces_from_page(
@@ -159,8 +250,14 @@ def traces_from_page(
     frames: list[TrackFrame] | None = None,
     headers: list[CurveHeader] | None = None,
     mnemonic_colors: dict[str, tuple[float, float, float]] | None = None,
+    mnemonic_styles: dict[str, dict] | None = None,
+    unwrap_log: bool = True,
 ) -> list[CurveTrace]:
-    """Build one CurveTrace per curve header that has a matching stroke on this page."""
+    """Build one CurveTrace per curve header that has a matching stroke on this page.
+
+    Style identity (colour + width + dash) comes from the page legend by default.
+    ``mnemonic_colors`` / ``mnemonic_styles`` remain as explicit overrides.
+    """
     grid_h, grid_v, curves = classify_strokes(page.strokes)
     if depth_map is None:
         depth_map = depth_map_from_labels(page.texts)
@@ -173,28 +270,40 @@ def traces_from_page(
         have = {h.mnemonic for h in headers}
         headers = list(headers) + [h for h in page_headers if h.mnemonic not in have]
 
-    # Apply explicit colours first; legend fills gaps without stealing explicit colours.
-    if mnemonic_colors:
-        for h in headers:
-            if h.mnemonic in mnemonic_colors:
-                h.color = tuple(float(c) for c in mnemonic_colors[h.mnemonic])
-    legend_colors_from_strokes([h for h in headers if h.color is None], page.strokes)
+    _apply_explicit_styles(headers, mnemonic_colors, mnemonic_styles)
+    # Legend fills styles for headers still missing them.
+    need = [h for h in headers if h.color is None]
+    if need and sum(1 for h in headers if h.color is not None) < 3:
+        got = legend_styles_from_strokes(list(need), page.strokes)
+        if len(got) < 3:
+            for h in need:
+                if h.mnemonic in got:
+                    h.color = h.width = h.dash = None
+    elif need and sum(1 for h in headers if h.color is not None) >= 3:
+        pass  # already have a legend; do not false-match on body pages
 
     if frames is None:
         vxs = [float(np.mean(s.pts[:, 0])) for s in grid_v]
+        hspans = []
         for s in grid_h:
-            vxs.append(float(s.pts[:, 0].min()))
-            vxs.append(float(s.pts[:, 0].max()))
+            x0 = float(s.pts[:, 0].min())
+            x1 = float(s.pts[:, 0].max())
+            vxs.append(x0)
+            vxs.append(x1)
+            hspans.append((x0, x1))
         vxs.append(0.0)
         depth_x = depth_map.info.get("x_col")
-        frames = tracks_from_grids(vxs, headers, page.width, depth_x=depth_x)
+        frames = tracks_from_grids(
+            vxs, headers, page.width, depth_x=depth_x, hgrid_spans=hspans,
+        )
 
-    # Known curve names we care about — skip bogus header parses (TIME_1900 etc.).
     skip = {"TIME_1900", "VDL", "MAIN", "REPEAT"}
     claimed: set[int] = set()
     out: list[CurveTrace] = []
-    # Prefer headers that have an explicit / legend colour.
-    ordered = sorted(headers, key=lambda h: (h.color is None, h.mnemonic in skip, -h.y))
+    ordered = sorted(
+        headers,
+        key=lambda h: (h.color is None, h.mnemonic in skip, -(h.width or 0), -h.y),
+    )
     for h in ordered:
         if h.mnemonic in skip:
             continue
@@ -204,7 +313,10 @@ def traces_from_page(
             continue
         claimed.add(id(chain))
         scale = ScaleMap(fr.x_left, fr.x_right, h.v_left, h.v_right, h.kind)
-        depth, value = _points_to_series(chain.pts, depth_map, scale)
+        if unwrap_log and h.kind == "log":
+            depth, value = _points_to_series_log_wrap(chain.pts, depth_map, scale)
+        else:
+            depth, value = _points_to_series(chain.pts, depth_map, scale)
         if len(depth) >= 2:
             _, uniq_idx = np.unique(np.round(depth, 6), return_index=True)
             uniq_idx.sort()
@@ -215,7 +327,8 @@ def traces_from_page(
             color=tuple(float(c) for c in col[:3]),
             unit=h.unit, kind=h.kind, page_index=page.page_index,
             info={"n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
-                  "track": (fr.x_left, fr.x_right)},
+                  "track": (fr.x_left, fr.x_right),
+                  "legend_style": {"color": h.color, "width": h.width, "dash": h.dash}},
         ))
     return out
 

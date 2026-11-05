@@ -18,6 +18,8 @@ from pylogdigitizer.pdf_vector.calibrate import (
     parse_curve_headers,
     parse_well_header,
     tracks_from_grids,
+    legend_styles_from_strokes,
+    legend_colors_from_strokes,
 )
 from pylogdigitizer.pdf_vector.assemble import (
     CurveTrace,
@@ -37,6 +39,8 @@ __all__ = [
     "parse_curve_headers",
     "parse_well_header",
     "tracks_from_grids",
+    "legend_styles_from_strokes",
+    "legend_colors_from_strokes",
     "CurveTrace",
     "classify_strokes",
     "traces_from_page",

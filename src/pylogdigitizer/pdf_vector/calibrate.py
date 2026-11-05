@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""Depth and scale calibration from PDF text + grid strokes (shared DepthMap / ScaleMap)."""
+"""Depth and scale calibration from PDF text + legend styles (shared DepthMap / ScaleMap)."""
 from __future__ import annotations
 
 import re
@@ -24,6 +24,7 @@ _SKIP_TITLE = {
     "CABLE", "TENSION", "MUD", "TEMPERATURE", "TRANSIT", "TIME", "FOR",
     "AMPLITUDE", "SPONTANEOUS", "POTENTIAL", "MAIN", "REPEAT", "TO",
     "VARIABLE", "DENSITY", "LOG", "WITH", "LITHIOLOGY", "PLATFORM", "EXPRESS",
+    "TOTAL", "COMPENSATED", "NEUTRON", "LITHO",
 }
 
 
@@ -38,6 +39,8 @@ class CurveHeader:
     y: float = 0.0
     descr: str = ""
     color: tuple[float, float, float] | None = None
+    width: float | None = None
+    dash: tuple[float, ...] | None = None
 
 
 @dataclass
@@ -64,7 +67,6 @@ def parse_scale_label(text: str) -> tuple[float, float, str, str] | None:
 
 
 def _depth_label_pairs(texts: list[TextItem]) -> list[tuple[float, float, float]]:
-    """Return (x, y, depth) for tokens that look like depth numbers."""
     out = []
     for t in texts:
         m = _DEPTH_RE.match(t.text.strip())
@@ -83,9 +85,7 @@ def depth_map_from_labels(texts: list[TextItem], min_labels: int = 3) -> DepthMa
     if len(pairs) < min_labels:
         return None
     xs = np.array([p[0] for p in pairs], float)
-    # Depth labels share one vertical column — keep the dominant x cluster.
     x_med = float(np.median(xs))
-    # Robust: mode-ish via histogram
     hist, edges = np.histogram(xs, bins=max(5, len(xs) // 2))
     if hist.max() >= min_labels:
         k = int(np.argmax(hist))
@@ -93,11 +93,9 @@ def depth_map_from_labels(texts: list[TextItem], min_labels: int = 3) -> DepthMa
     col = [p for p in pairs if abs(p[0] - x_med) < 25]
     if len(col) < min_labels:
         col = pairs
-    # Reject scale-endpoint leftovers: depths in a depth column are nearly evenly spaced.
     col = sorted(col, key=lambda p: -p[1])
     ys = np.array([p[1] for p in col], float)
     ds = np.array([p[2] for p in col], float)
-    # Keep monotone increasing depth as y falls.
     keep = [0]
     for i in range(1, len(ds)):
         if ds[i] > ds[keep[-1]] + 0.05:
@@ -105,13 +103,11 @@ def depth_map_from_labels(texts: list[TextItem], min_labels: int = 3) -> DepthMa
     ys, ds = ys[keep], ds[keep]
     if len(ys) < min_labels:
         return None
-    # Drop outliers that break the roughly-linear y↔depth relation (e.g. a lone "2000" from a scale).
     if len(ys) >= 5:
-        # residual vs linear fit; drop points > 3σ
         coef = np.polyfit(-ys, ds, 1)
         pred = np.polyval(coef, -ys)
         resid = np.abs(ds - pred)
-        thr = max(5.0, 3 * np.median(resid) * 1.4826)  # MAD→σ
+        thr = max(5.0, 3 * np.median(resid) * 1.4826)
         ok = resid <= thr
         if ok.sum() >= min_labels:
             ys, ds = ys[ok], ds[ok]
@@ -141,11 +137,9 @@ def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
         parsed = _mnemonic_from_title(t.text)
         if not parsed:
             continue
-        # Skip bare mnemonic tags drawn inside the track (small font, mid-page).
         if t.size and t.size < 9 and "(" not in t.text and " " not in t.text:
             continue
         mnem, title = parsed
-        # Find nearest scale below this title (smaller y), similar x.
         best = None
         for j in range(i + 1, min(len(items), i + 12)):
             if j in used_scale_idx:
@@ -168,10 +162,8 @@ def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
         v0, v1, unit, kind = sc
         headers.append(CurveHeader(mnemonic=mnem, v_left=v0, v_right=v1, unit=unit,
                                    kind=kind, x=s.x, y=s.y, descr=title))
-    # Deduplicate mnemonic (keep first = topmost).
     seen: set[str] = set()
     out = []
-    # Reject tokens that are clearly not curve mnemonics (date/time marks, section titles).
     bad_prefix = ("TIME_", "DATE", "ONE", "LOG", "MAX_", "MIN_")
     for h in headers:
         if h.mnemonic in seen:
@@ -183,63 +175,96 @@ def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
     return out
 
 
-def legend_colors_from_strokes(
+def legend_styles_from_strokes(
     headers: list[CurveHeader],
     strokes: list[Stroke],
-    y_min: float | None = None,
-) -> dict[str, tuple[float, float, float]]:
-    """Map mnemonic → RGB using short horizontal coloured swatches in the header band.
+) -> dict[str, dict]:
+    """Map mnemonic → {color, width, dash} from horizontal legend swatches.
 
-    Schlumberger plots draw a coloured tick/line next to each curve's scale row.
+    Schlumberger (and similar) draw a coloured/dashed tick beside each curve's
+    scale row. Matching uses (colour, width, dash), not colour alone — e.g. MTEM
+    is solid black width 5 while TENS is dashed black width 3.
     """
     if not headers:
         return {}
-    # Header band: near the highest scale labels.
-    y_top = max(h.y for h in headers) + 40
-    y_bot = min(h.y for h in headers) - 30
-    if y_min is not None:
-        y_bot = max(y_bot, y_min)
-    swatches: list[tuple[float, float, tuple[float, float, float]]] = []  # y, x, color
+    y_top = max(h.y for h in headers) + 50
+    y_bot = min(h.y for h in headers) - 40
+    swatches: list[tuple[float, float, tuple[float, float, float], float, tuple[float, ...]]] = []
     for s in strokes:
         if len(s.pts) < 2:
             continue
-        rgb = s.color
-        if all(c < 0.12 for c in rgb) or all(c > 0.92 for c in rgb):
+        rgb = (float(s.color[0]), float(s.color[1]), float(s.color[2]))
+        if all(c > 0.9 for c in rgb):
             continue
-        if max(rgb) - min(rgb) < 0.08:
+        if max(rgb) - min(rgb) < 0.08 and min(rgb) > 0.4:
             continue
         dx = float(np.ptp(s.pts[:, 0]))
         dy = float(np.ptp(s.pts[:, 1]))
         cy = float(np.mean(s.pts[:, 1]))
         cx = float(np.mean(s.pts[:, 0]))
-        if cy < y_bot or cy > y_top:
+        if cy < y_bot or cy > y_top or dy > 6 or dx < 60:
             continue
-        if dy > 8:  # not a horizontal swatch
+        if s.width < 2.5 and not s.dash:
             continue
-        if dx < 20:  # too short
-            continue
-        swatches.append((cy, cx, (float(rgb[0]), float(rgb[1]), float(rgb[2]))))
+        swatches.append((cy, cx, rgb, float(s.width), tuple(float(x) for x in s.dash)))
 
-    out: dict[str, tuple[float, float, float]] = {}
-    used_cols: set[tuple[float, float, float]] = set()
-    # Process top-to-bottom so each swatch row pairs with the nearest header.
-    for h in sorted(headers, key=lambda hh: -hh.y):
-        # Same side of the page as the scale label (left vs right track header).
-        cands = [sw for sw in swatches if (sw[1] < 200) == (h.x < 200) or abs(sw[1] - h.x) < 120]
-        if not cands:
+    def style_key(rgb, w, dash):
+        return (tuple(round(c, 2) for c in rgb), round(w, 1), tuple(round(d, 1) for d in dash))
+
+    def same_side(sw_x: float, h_x: float) -> bool:
+        # Left track headers (~x<200) vs right (~x>250).
+        return (sw_x < 220) == (h_x < 220)
+
+    # Score each (header, swatch) pair; greedily assign closest unused swatch
+    # within a tight vertical window of the scale row.
+    pairs: list[tuple[float, int, int]] = []  # (score, hi, si)
+    for hi, h in enumerate(headers):
+        if h.color is not None and h.width is not None:
+            continue  # already styled
+        target_y = h.y + 14.0
+        for si, sw in enumerate(swatches):
+            if not same_side(sw[1], h.x):
+                continue
+            dy = abs(sw[0] - target_y)
+            if dy > 18:
+                continue
+            dx = abs(sw[1] - h.x)
+            # Prefer distinctive styles slightly so plain black grid bars lose.
+            distinct = (max(sw[2]) - min(sw[2]) > 0.1) or bool(sw[4]) or sw[3] >= 4.5
+            score = dy + 0.02 * dx - (3.0 if distinct else 0.0)
+            pairs.append((score, hi, si))
+    pairs.sort()
+    out: dict[str, dict] = {}
+    used_h: set[int] = set()
+    used_s: set[int] = set()
+    used_style: set[tuple] = set()
+    for score, hi, si in pairs:
+        if hi in used_h or si in used_s:
             continue
-        cands = sorted(cands, key=lambda sw: abs(sw[0] - (h.y + 12)) + 0.02 * abs(sw[1] - h.x))
-        pick = None
-        for sw in cands:
-            if sw[2] not in used_cols:
-                pick = sw[2]
-                break
-        if pick is None:
+        h = headers[hi]
+        sw = swatches[si]
+        key = style_key(sw[2], sw[3], sw[4])
+        # Allow same style on opposite tracks (e.g. two black solids), but not twice
+        # on the same track side.
+        side = 0 if sw[1] < 220 else 1
+        side_key = (key, side)
+        if side_key in used_style:
             continue
-        used_cols.add(pick)
-        out[h.mnemonic] = pick
-        h.color = pick
+        used_h.add(hi)
+        used_s.add(si)
+        used_style.add(side_key)
+        style = {"color": sw[2], "width": sw[3], "dash": sw[4]}
+        out[h.mnemonic] = style
+        h.color = sw[2]
+        h.width = sw[3]
+        h.dash = sw[4]
     return out
+
+
+# Back-compat alias
+def legend_colors_from_strokes(headers, strokes):
+    styles = legend_styles_from_strokes(headers, strokes)
+    return {m: s["color"] for m, s in styles.items()}
 
 
 def parse_well_header(texts: list[TextItem] | str) -> dict[str, str]:
@@ -275,25 +300,56 @@ def tracks_from_grids(
     headers: list[CurveHeader],
     page_width: float,
     depth_x: float | None = None,
+    hgrid_spans: list[tuple[float, float]] | None = None,
 ) -> list[TrackFrame]:
-    """Split page into tracks at vertical grid lines; skip the depth-label column."""
-    xs = sorted(set(round(x, 1) for x in vgrid_xs))
-    if len(xs) < 2:
-        xs = [0.0, float(page_width)]
+    """Build track frames from vertical grids and horizontal-grid spans.
+
+    Horizontal depth-grid ticks usually span each track exactly (e.g. 0–180 and
+    234–414). Those spans are the most reliable track bounds on Schlumberger PDFs.
+    """
+    spans = []
+    if hgrid_spans:
+        # Keep spans of typical track width.
+        for a, b in hgrid_spans:
+            # Linear tracks ~180 pt; log resistivity tracks can be ~360 pt.
+            if 60 <= (b - a) <= 400:
+                spans.append((round(float(a), 1), round(float(b), 1)))
     frames: list[TrackFrame] = []
+    if spans:
+        # Unique spans (cluster edges within 3 pt).
+        uniq: list[tuple[float, float]] = []
+        for a, b in sorted(set(spans)):
+            if any(abs(a - ua) < 3 and abs(b - ub) < 3 for ua, ub in uniq):
+                continue
+            uniq.append((a, b))
+        for a, b in uniq:
+            fr = TrackFrame(x_left=float(a), x_right=float(b))
+            for h in headers:
+                # Scale text sits near the left of its track (or just inside).
+                if a - 20 <= h.x <= b + 5:
+                    fr.curves.append(h)
+            if fr.curves:
+                h0 = fr.curves[0]
+                fr.scale = (log_scale if h0.kind == "log" else linear_scale)(
+                    fr.x_left, fr.x_right, h0.v_left, h0.v_right
+                )
+            frames.append(fr)
+        if frames:
+            return frames
+
+    # Fallback: vertical grid edges only.
+    xs = sorted(set(round(float(x), 1) for x in vgrid_xs))
+    xs = [0.0] + [x for x in xs if 5 < x < page_width - 5] + [float(page_width)]
     for a, b in zip(xs, xs[1:]):
         if b - a < 25:
             continue
-        mid = 0.5 * (a + b)
         if depth_x is not None and a - 5 <= depth_x <= b + 5 and (b - a) < 80:
-            continue  # depth column
+            continue
         fr = TrackFrame(x_left=float(a), x_right=float(b))
         for h in headers:
-            # Scale label x is near the left edge of the track header.
             if a - 40 <= h.x <= b + 10:
                 fr.curves.append(h)
         if fr.curves:
-            # Default track scale from first curve; per-curve ScaleMap built at assemble time.
             h0 = fr.curves[0]
             fr.scale = (log_scale if h0.kind == "log" else linear_scale)(
                 fr.x_left, fr.x_right, h0.v_left, h0.v_right
@@ -316,3 +372,26 @@ def is_near_white(rgb: tuple[float, float, float], thr: float = 0.92) -> bool:
 
 def is_near_gray(rgb: tuple[float, float, float], spread: float = 0.05) -> bool:
     return max(rgb) - min(rgb) < spread
+
+
+def style_distance(
+    color_a: tuple[float, ...], width_a: float, dash_a: tuple[float, ...],
+    color_b: tuple[float, ...] | None, width_b: float | None, dash_b: tuple[float, ...] | None,
+) -> float:
+    """Lower = better match. Missing legend fields are ignored."""
+    if color_b is None and width_b is None and dash_b is None:
+        return 10.0
+    d = 0.0
+    if color_b is not None:
+        d += sum((float(x) - float(y)) ** 2 for x, y in zip(color_a, color_b))
+    if width_b is not None:
+        d += 0.15 * abs(float(width_a) - float(width_b))
+    if dash_b is not None:
+        da, db = tuple(dash_a), tuple(dash_b)
+        if bool(da) != bool(db):
+            d += 1.0
+        elif da and db:
+            # Compare first dash/gap pair (lengths may differ).
+            n = min(len(da), len(db), 2)
+            d += 0.05 * sum(abs(da[i] - db[i]) for i in range(n))
+    return d
