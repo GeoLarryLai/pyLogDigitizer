@@ -183,6 +183,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     vmode = trace_kw.pop("vector_trace", False)
     amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True), the panel ("panel") or the segmenter's curve ink ("model")
     seg_model = trace_kw.pop("seg_model", None)
+    seed_curves = trace_kw.pop("seed_curves", False)    # with "model": independent seeds for multi-curve tracks
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
         if vmode == "v1":
@@ -218,7 +219,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             cp = curve_probability(pan, seg_model)
             cink = np.asarray(pan, bool) & (cp > 0.5)
             cands = T.get("candidates") or [T]
-            seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if len(cands) > 1 else []
+            seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if (len(cands) > 1 and seed_curves) else []
             if len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
                 for t, sd in zip(cands, at.match_to(cands, seeded)):
                     nx = sd["x"][:len(t["x"])]

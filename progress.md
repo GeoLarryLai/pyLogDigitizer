@@ -13,3 +13,9 @@
 - `apply_identity` + `appearance_trace="model"`: joint candidate re-trace on curve ink, each later candidate excluded from claimed strokes except near crossings.
 - WEATHERFORD r_reg: GR 0.400 (old 0.458, pilot 1 0.424); NPHI 0.491 (old 0.485); DPHI 0.703 (old 0.748). GR crop 3150-3220 r_reg 0.878; no-wrap 3150-3200 r 0.936 (old 0.928, pilot 1 0.955).
 - Still failing: in the NPHI/DPHI track both candidates ride the same (left) curve for most of the depth, and the right curve is never traced, so the identity step cannot help. The GR backup wrap near 3205 ft is still flattened at ~140 API.
+
+## Seeded multi-curve + explicit wrap (2026-11-05)
+- `find_seeds` / `seeded_multi_trace` (opt-in `seed_curves=True` with `appearance_trace="model"`): independent seeds from distinct curve-ink runs; widest curve traced first; later curves are excluded from claimed strokes except near crossings. Roles (which curve is the job's pick) are matched to the pick-rule candidates by overlap, because the WEATHERFORD track2 header has no detectable legend (`legend_styles` returns []).
+- `wrap_backup`: explicit wrap transition, valued on the backup scale.
+- WEATHERFORD r_reg: NPHI 0.598 (old 0.485, pilot 2 0.491); DPHI 0.658 (old 0.748, pilot 2 0.703); GR 0.400 with seeding off (pilot 2 0.400, old 0.458); GR with seeding on 0.251. GR crop r_reg 0.884, no-wrap r 0.936.
+- Still failing: the wrap near 3207 ft is detected but valued ~152, not ~300, because the backup trace is limited to the left half and the real backup curve sweeps to the right edge. In the NPHI/DPHI track, candidates still share one curve for long stretches. Shape sanity check only: candidate 0 matches DPHI's shape better (|r| 0.83) than candidate 1 does (0.67), so the DPHI role is probably on the wrong trace. No re-assignment was made from the refs.

@@ -311,7 +311,7 @@ def match_to(cands: list, seeded: list) -> list:
 
 
 def wrap_backup(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: float, side: str = "right",
-                edge: int = 6, near: float = 0.85, min_len: int = 2, **kw):
+                edge: int | None = None, near: float = 0.85, min_len: int = 2, **kw):
     """Explicit wrap transition: samples where the traced curve is near the ``side`` edge and the
     curve ink in its band runs into that edge (the curve leaves the track) start a wrap; during the
     wrap the backup curve is traced entering from the opposite edge (prior pinned there), and the
@@ -319,6 +319,7 @@ def wrap_backup(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: float, sid
     for samples a..b-1 (value it on the backup scale)."""
     H, W = curve_ink.shape
     n = len(x); wi = int(round(width))
+    edge = int(edge if edge is not None else max(6, round(0.02 * wi)))   # the edge zone (border line is grid, not curve)
     B = band_ink(curve_ink, fy, n, dilate=0)
     if side == "right":
         touch = B[:, max(0, wi - edge):wi].any(1); enter = B[:, 0:edge].any(1)
