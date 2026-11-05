@@ -216,7 +216,17 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             if not seg_model:
                 raise ValueError("appearance_trace='model' needs seg_model=<path to .onnx>")
             cp = curve_probability(pan, seg_model)
-            T = at.apply_identity(T, np.asarray(pan, bool) & (cp > 0.5))
+            cink = np.asarray(pan, bool) & (cp > 0.5)
+            cands = T.get("candidates") or [T]
+            seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if len(cands) > 1 else []
+            if len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
+                for t, sd in zip(cands, at.match_to(cands, seeded)):
+                    nx = sd["x"][:len(t["x"])]
+                    t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
+                    at._set_x(t, nx, np.ones(len(nx), bool))
+                checks["seeded"] = [round(float(sd["seed_x"]), 1) for sd in seeded]
+            else:
+                T = at.apply_identity(T, cink)
             checks["seg_curve_frac"] = round(float((cp > 0.5).mean()), 4)
         else:
             T = at.apply_appearance(T, pan if amode == "panel" else GR_["residual"])
@@ -224,6 +234,12 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         checks["grid_layer"] = dict(v_lines=len(GR_["G"]["vlines"]), v_kind=GR_["G"]["v_kind"],
                                     h_period=GR_["G"]["h_period"], heavy_v=len(GR_["G"]["heavy_v"]))
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
+    if amode == "model" and backup is not None:   # explicit wrap transition onto the backup curve
+        mk = sc.log_scale if scale_type == "log" else sc.linear_scale
+        wb = at.wrap_backup(cink, np.asarray(T["x"], float), int(T["fy"]), width, wrap_side)
+        for a, b, xb in wb:
+            v[a:b] = mk(0, width, *backup)(xb)
+        checks["model_wraps"] = [(int(a), int(b)) for a, b, _ in wb]
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)
     if use_ocr:

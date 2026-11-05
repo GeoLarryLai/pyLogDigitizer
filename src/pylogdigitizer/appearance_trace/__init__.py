@@ -239,3 +239,117 @@ def apply_identity(T: dict, curve_ink: np.ndarray, cross_px: float | None = None
         done.append(r)
         claimed |= stroke_band(r["x"], r["width"], fy, (H, W))
     return T
+
+
+def find_seeds(curve_ink: np.ndarray, fy: int, n: int, start: int = 0, window: int = 80, min_sep: float = 20.0):
+    """Independent seeds for ``n`` curves: the first sample (from ``start``, within ``window`` samples)
+    whose band shows >= ``n`` separate curve-ink runs at least ``min_sep`` px apart; returns
+    (sample, [(x, width), ...] widest first) or None."""
+    H, W = curve_ink.shape
+    s0 = start * fy
+    B = band_ink(curve_ink[s0:s0 + window * fy], fy, dilate=0)
+    Wm = width_map(curve_ink[s0:s0 + window * fy], fy, dilate=0)
+    for i in range(B.shape[0]):
+        rs = [(a, b) for a, b in _runs(B[i]) if b - a >= 2]
+        if len(rs) < n:
+            continue
+        c = [((a + b - 1) / 2, float(Wm[i, a:b].max())) for a, b in rs]
+        c.sort(key=lambda t: -t[1])
+        pick = []
+        for x, w in c:
+            if all(abs(x - p[0]) >= min_sep for p in pick):
+                pick.append((x, w))
+            if len(pick) == n:
+                return start + i, pick
+    return None
+
+
+def seeded_multi_trace(curve_ink: np.ndarray, fy: int, n: int = 2, seed_len: int = 6,
+                       cross_px: float | None = None, **kw):
+    """Trace ``n`` curves on curve ink from independent seeds (not from another tracer's picks):
+    each curve gets a prior only at its seed (``seed_len`` samples), so its stroke width and dash
+    gaps are learnt from its own seed; curves are traced widest first, each later curve does not see
+    strokes already claimed except where its own first pass comes within ``cross_px`` of them
+    (crossings). Returns a list of dict(x, width, seed_x, seed_sample) or [] when no seeds."""
+    H, W = curve_ink.shape
+    ns = -(-H // fy)
+    sd = find_seeds(curve_ink, fy, n)
+    if sd is None:
+        return []
+    s, seeds = sd
+    claimed = np.zeros((H, W), bool); out = []
+    for x0, w0 in seeds:
+        pr = np.full(ns, np.nan); pr[s:s + seed_len] = x0
+        if not out:
+            r = trace_appearance(curve_ink, fy, pr, **kw)
+            x = r["x"]; wd = r["width"]
+        else:
+            r0 = trace_appearance(curve_ink & ~claimed, fy, pr, **kw)
+            near = np.zeros(ns, bool)
+            for d in out:
+                cp = float(cross_px if cross_px is not None else max(4.0, 1.5 * np.nanmedian(d["width"])))
+                near |= np.abs(r0["x"] - d["x"]) <= cp
+            rowsnear = np.repeat(near, fy)[:H]
+            if rowsnear.size < H:
+                rowsnear = np.r_[rowsnear, np.zeros(H - rowsnear.size, bool)]
+            pr2 = r0["x"].copy(); pr2[s + seed_len:] = np.where(near[s + seed_len:], np.nan, pr2[s + seed_len:])
+            r = trace_appearance(curve_ink & (~claimed | rowsnear[:, None]), fy, pr2, **kw)
+            x = r["x"]; wd = r["width"]
+        out.append(dict(x=x.astype(float), width=wd, seed_x=x0, seed_sample=s))
+        claimed |= stroke_band(x, wd, fy, (H, W))
+    return out
+
+
+def match_to(cands: list, seeded: list) -> list:
+    """Order seeded traces to the candidates they overlap most (labels only: which seeded trace
+    plays which candidate role); returns seeded list reordered to len(cands)."""
+    if len(seeded) < 2 or len(cands) < 2:
+        return seeded[:len(cands)]
+    d = lambda c, s: float(np.nanmedian(np.abs(np.asarray(c["x"], float) - s["x"][:len(c["x"])])))
+    keep = d(cands[0], seeded[0]) + d(cands[1], seeded[1]); swap = d(cands[0], seeded[1]) + d(cands[1], seeded[0])
+    return seeded if keep <= swap else [seeded[1], seeded[0]] + seeded[2:]
+
+
+def wrap_backup(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: float, side: str = "right",
+                edge: int = 6, near: float = 0.85, min_len: int = 2, **kw):
+    """Explicit wrap transition: samples where the traced curve is near the ``side`` edge and the
+    curve ink in its band runs into that edge (the curve leaves the track) start a wrap; during the
+    wrap the backup curve is traced entering from the opposite edge (prior pinned there), and the
+    wrap ends when that ink no longer touches the edge. Returns [(a, b, xb)] with xb the backup x
+    for samples a..b-1 (value it on the backup scale)."""
+    H, W = curve_ink.shape
+    n = len(x); wi = int(round(width))
+    B = band_ink(curve_ink, fy, n, dilate=0)
+    if side == "right":
+        touch = B[:, max(0, wi - edge):wi].any(1); enter = B[:, 0:edge].any(1)
+        close = np.asarray(x, float) >= near * width
+    else:
+        touch = B[:, 0:edge].any(1); enter = B[:, max(0, wi - edge):wi].any(1)
+        close = np.asarray(x, float) <= (1 - near) * width
+    # main-side contact must be attached to the traced stroke: same run from trace to the edge
+    att = np.zeros(n, bool)
+    for i in np.nonzero(touch & close)[0]:
+        xi = int(np.clip(x[i], 0, W - 1))
+        for a_, b_ in _runs(B[i, :wi]):          # the run under (or within 4 px of) the trace reaches the edge
+            if a_ - 4 <= xi < b_ + 4 and ((side == "right" and b_ >= wi - edge) or (side != "right" and a_ < edge)):
+                att[i] = True
+    on = att.copy()
+    # extend each contact while backup ink still enters from the opposite edge
+    i = 0; spans = []
+    while i < n:
+        if not on[i]:
+            i += 1; continue
+        a = i
+        while i < n and (on[i] or enter[i]):
+            i += 1
+        if i - a >= min_len and enter[a:i].mean() > 0.3:
+            spans.append((a, i))
+    out = []
+    for a, b in spans:
+        sub = curve_ink[a * fy:b * fy, :wi // 2] if side == "right" else curve_ink[a * fy:b * fy, wi // 2:wi]
+        pr = np.full(b - a, 0.0 if side == "right" else (wi - wi // 2) - 1.0)
+        pr[2:-2] = np.nan if b - a > 4 else pr[2:-2]
+        r = trace_appearance(sub, fy, pr, passes=1, **kw)
+        xb = r["x"][:b - a] + (0 if side == "right" else wi // 2)
+        out.append((a, b, xb))
+    return out
