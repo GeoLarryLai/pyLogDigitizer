@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Larry Syu-Heng Lai
+"""First E2E: digitize FORGE 78B-32 CBL + induction vector PDFs; QC vs companion LAS.
+
+Paths are local workspace inputs (not shipped). Figures → /workspace/pld_viz_out/pdf_vector/.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import lasio
+
+from pylogdigitizer.pdf_vector import digitize_pdf
+from pylogdigitizer.pdf_vector.calibrate import CurveHeader
+from pylogdigitizer.qc_compare import compare, qc_plot
+
+VIZ = Path("/workspace/pld_viz_out/pdf_vector")
+VIZ.mkdir(parents=True, exist_ok=True)
+DATA = Path("/workspace/pld_vector_pdf")
+OUT = Path("/workspace/pld_pdf/artifacts/pdf_vector")
+OUT.mkdir(parents=True, exist_ok=True)
+
+# Explicit Schlumberger colours for FORGE plots (legend swatches on these PDFs).
+CBL_COLORS = {
+    "ECGR_STGC": (0.0, 0.75, 0.0),
+    "TT": (0.0, 0.0, 1.0),
+    "CBL": (0.0, 0.0, 0.0),
+}
+IND_COLORS = {
+    "ECGR_STGC": (0.0, 0.75, 0.0),
+    "AT20": (0.5, 0.0, 0.5),
+    "AT30": (0.0, 0.0, 1.0),
+    "AT60": (1.0, 0.0, 0.0),
+}
+
+
+def qc_curves(log, las_path: Path, alias: dict[str, str], tag: str) -> dict:
+    from pylogdigitizer.qc_compare import metrics, to_grid, align_depth, shift as shift_arr
+    las = lasio.read(str(las_path))
+    df = las.df()
+    scores = {}
+    for t in log.traces:
+        m = alias.get(t.mnemonic, t.mnemonic)
+        if m not in df.columns:
+            scores[t.mnemonic] = {"status": "no_las_curve", "las": m}
+            continue
+        ref = df[m].replace(-999.25, np.nan).dropna()
+        if log.depth is not None and t.mnemonic in log.curves:
+            td, tv = log.depth, log.curves[t.mnemonic]
+            ok = np.isfinite(td) & np.isfinite(tv)
+            td, tv = td[ok], tv[ok]
+        else:
+            td, tv = np.asarray(t.depth, float), np.asarray(t.value, float)
+            ok = np.isfinite(td) & np.isfinite(tv)
+            td, tv = td[ok], tv[ok]
+        if len(td) < 20:
+            scores[t.mnemonic] = {"status": "too_few_samples", "n": int(len(td))}
+            continue
+        # Interpolate reference onto digitized depths only (never bridge PDF page gaps).
+        rv = to_grid(ref.index.values, ref.values, td)
+        raw = metrics(rv, tv)
+        s = align_depth(rv, tv, max_shift=10)
+        aligned = metrics(rv, shift_arr(tv, s))
+        scores[t.mnemonic] = {
+            "las": m,
+            "raw_r": raw["r"], "raw_rmse": raw["rmse"], "raw_n": raw["n"],
+            "aligned_r": aligned["r"], "aligned_rmse": aligned["rmse"],
+            "shift_ft": s * 0.5, "reason": raw.get("reason", ""),
+        }
+        if raw["n"] >= 20 and np.isfinite(raw.get("r", np.nan)):
+            qc_plot(
+                td, rv, tv,
+                str(VIZ / f"{tag}_{t.mnemonic}.png"),
+                title=f"{tag} {t.mnemonic}→{m} r={raw['r']:.3f}",
+                labels=("reference LAS", "digitized PDF"),
+            )
+        print(
+            f"  {t.mnemonic}->{m}: r={raw['r']} rmse={raw['rmse']} "
+            f"n={raw['n']} aligned_r={aligned['r']} shift={s * 0.5}"
+        )
+    return scores
+
+
+def run_cbl():
+    pdf = DATA / "UniversityofUtah_Forge78B-32_6Oct21_CBL.Pdf"
+    las = DATA / "other" / "UniversityofUtah_Forge78B-32_6Oct21_CBL_Main_REV1.las"
+    # A few representative body pages (shallow / mid / deep) — full well is 40+ pages.
+    pages = [5, 19, 29, 39]  # ~110-320, 3190-3400, 5390-5600, 7590-7800
+    print("CBL pages", [p + 1 for p in pages])
+    log = digitize_pdf(pdf, pages=pages, step=0.5, mnemonic_colors=CBL_COLORS)
+    print("traces", [(t.mnemonic, int(t.depth.min()), int(t.depth.max()), t.info) for t in log.traces])
+    print("well", log.well)
+    las_out = OUT / "forge78B_cbl_digitized.las"
+    log.to_las(las_out)
+    print("wrote", las_out)
+    scores = qc_curves(log, las, {"ECGR_STGC": "GR_STGC", "TT": "TT", "CBL": "CBL", "MTEM": "MTEM"}, "cbl")
+    return {"pages": [p + 1 for p in pages], "well": log.well, "scores": scores,
+            "curves": list(log.curves), "las": str(las_out)}
+
+
+def run_induction():
+    pdf = DATA / "forge_78B_graphics" / "UOU_FORGE-78B-32_R1B_TD_SECTION_Induction_30Jul21_070636.Pdf"
+    las = DATA / "other" / "UOU_FORGE-78B-32_R2A_HLDS-QCNT-QAIT_Main Pass-GenericV12.las"
+    # Page 11 (idx 10) overlaps LAS 8500-8563; page 18 is below LAS (TD only).
+    pages = [10, 17]
+    print("IND pages", [p + 1 for p in pages])
+    log = digitize_pdf(pdf, pages=pages, step=0.5, mnemonic_colors=IND_COLORS)
+    print("traces", [(t.mnemonic, float(t.depth.min()), float(t.depth.max()), t.color) for t in log.traces])
+    print("well", log.well)
+    las_out = OUT / "forge78B_induction_digitized.las"
+    if log.traces:
+        log.to_las(las_out)
+        print("wrote", las_out)
+    scores = qc_curves(
+        log, las,
+        {"ECGR_STGC": "GR_STGC", "AT10": "AT10", "AT20": "AT20", "AT30": "AT30",
+         "AT60": "AT60", "AT90": "AT90"},
+        "ind",
+    )
+    return {"pages": [p + 1 for p in pages], "well": log.well, "scores": scores,
+            "curves": list(log.curves), "las": str(las_out) if log.traces else None}
+
+
+def main():
+    report = {"cbl": run_cbl(), "induction": run_induction()}
+    # JSON-safe
+    def conv(o):
+        if isinstance(o, dict):
+            return {k: conv(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [conv(v) for v in o]
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if o is None or isinstance(o, (str, int, float, bool)):
+            return o
+        return str(o)
+    path = VIZ / "e2e_scores.json"
+    path.write_text(json.dumps(conv(report), indent=2))
+    print("scores →", path)
+
+
+if __name__ == "__main__":
+    main()
