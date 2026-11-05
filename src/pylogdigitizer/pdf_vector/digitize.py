@@ -95,8 +95,7 @@ def _collect_headers(reader: PdfReader, page_indices: list[int]) -> list[CurveHe
     ))
     seen: set[str] = set()
     out: list[CurveHeader] = []
-    best_styles: dict[str, dict] = {}
-    best_n = 0
+    merged_styles: dict[str, dict] = {}
     for i in order:
         pv = extract_page(reader, i)
         page_headers = parse_curve_headers(pv.texts)
@@ -107,19 +106,20 @@ def _collect_headers(reader: PdfReader, page_indices: list[int]) -> list[CurveHe
             out.append(h)
         probe = [_dc_replace(h) for h in page_headers]
         got = legend_styles_from_strokes(probe, pv.strokes)
-        # Prefer the page that resolves the most swatches (true legend / header bar).
-        if len(got) > best_n:
-            best_n = len(got)
-            best_styles = got
-    if best_n >= 3:
-        by = {h.mnemonic: h for h in out}
-        for mnem, style in best_styles.items():
-            h = by.get(mnem)
-            if h is None:
-                continue
-            h.color = style["color"]
-            h.width = style["width"]
-            h.dash = style["dash"]
+        # Keep styles from every rich legend/header bar; first assignment wins.
+        if len(got) < 3:
+            continue
+        for mnem, style in got.items():
+            if mnem not in merged_styles:
+                merged_styles[mnem] = style
+    by = {h.mnemonic: h for h in out}
+    for mnem, style in merged_styles.items():
+        h = by.get(mnem)
+        if h is None:
+            continue
+        h.color = style["color"]
+        h.width = style["width"]
+        h.dash = style["dash"]
     return out
 
 

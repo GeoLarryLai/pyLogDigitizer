@@ -60,7 +60,7 @@ def classify_strokes(strokes: list[Stroke]) -> tuple[list[Stroke], list[Stroke],
             continue
         elif (not is_near_black(s.color) or bool(s.dash)) and len(s.pts) >= 5 and dy > 20:
             curves.append(s)
-        elif is_near_black(s.color) and not s.dash and s.width >= 2.5 and dy > 40 and dx > 5:
+        elif is_near_black(s.color) and not s.dash and s.width >= 2.5 and dy > 40 and dx > 1.5:
             curves.append(s)
     return grid_h, grid_v, curves
 
@@ -127,6 +127,76 @@ def unwrap_log_wraps(
     return restored
 
 
+
+def unwrap_continuity(
+    depth: np.ndarray,
+    value: np.ndarray,
+    v_left: float,
+    v_right: float,
+    kind: str = "linear",
+) -> np.ndarray:
+    """Resolve linear (or log) scale wraps by depth continuity — no fixed offsets.
+
+    Walks deep→shallow. At each sample chooses wrap count k so the value stays
+    continuous with the deeper neighbour. Scale span comes from the header
+    (``|v_right - v_left|`` or the log decade ratio). Deepest sample prefers an
+    in-scale reading when one exists.
+    """
+    d = np.asarray(depth, float)
+    v = np.asarray(value, float)
+    out = v.copy()
+    finite = np.isfinite(d) & np.isfinite(v)
+    if finite.sum() < 2:
+        return out
+    lo, hi = (min(v_left, v_right), max(v_left, v_right))
+    order = np.argsort(d)[::-1]  # deep → shallow
+    order = order[finite[order]]
+
+    if kind == "log":
+        if v_left <= 0 or v_right <= 0:
+            return out
+        decade = hi / lo if hi > lo else lo / hi
+        if decade <= 1:
+            return out
+
+        def candidates(raw: float):
+            return [raw * (decade ** k) for k in range(-3, 4)]
+
+        def in_scale(x: float) -> bool:
+            return lo / (decade ** 0.05) <= x <= hi * (decade ** 0.05)
+    else:
+        span = abs(v_right - v_left)
+        if span < 1e-9:
+            return out
+
+        def candidates(raw: float):
+            return [raw + k * span for k in range(-3, 4)]
+
+        def in_scale(x: float) -> bool:
+            return lo - 0.02 * span <= x <= hi + 0.02 * span
+
+    # Scale span for jump penalty (linear only reaches here with a finite span).
+    span = abs(v_right - v_left) if kind != "log" else None
+    prev = None
+    for i in order:
+        cands = candidates(float(v[i]))
+        if prev is None:
+            in_sc = [c for c in cands if in_scale(c)]
+            pick = min(in_sc or cands, key=lambda c: abs(c - 0.5 * (lo + hi)))
+        else:
+            def cost(c: float, _p=prev) -> float:
+                # Walking deep→shallow: a sudden rise of ~1 scale span is a wrap,
+                # not a real jump (mud-temp / tension wraps).
+                d = abs(c - _p)
+                if span is not None and c > _p + 0.3 * span:
+                    d += 0.5 * span
+                return d
+            pick = min(cands, key=cost)
+        out[i] = pick
+        prev = pick
+    return out
+
+
 def _points_to_series_log_wrap(
     pts: np.ndarray,
     depth_map: DepthMap,
@@ -152,16 +222,25 @@ def _body_segs(segs: list[Stroke]) -> list[Stroke]:
 
 
 def _frame_for_header(h: CurveHeader, frames: list[TrackFrame], page_width: float) -> TrackFrame:
-    """Pick a plausible track for this header (prefer narrow frames over page-wide)."""
+    """Pick a plausible track for this header (prefer narrow frames over page-wide).
+
+    Scale labels sit near the *left* of their track, so prefer the frame whose
+    left edge is closest to (and ≤) the header x.
+    """
     containing = [
         fr for fr in frames
         if fr.x_left - 40 <= h.x <= fr.x_right + 10
         or any(c.mnemonic == h.mnemonic for c in fr.curves)
     ]
-    # Prefer tracks of typical width (<280 pt). Giant frames are last resort.
     narrow = [fr for fr in containing if (fr.x_right - fr.x_left) < 400]
     if narrow:
-        return min(narrow, key=lambda fr: abs((fr.x_left + fr.x_right) / 2 - h.x))
+        # Prefer frames where header sits near the left edge (typical scale text).
+        def score(fr: TrackFrame) -> tuple:
+            left_dist = h.x - fr.x_left
+            # Good if header is just inside from the left (0..40 pt).
+            left_fit = abs(left_dist - 5.0) if -20 <= left_dist <= 50 else 200 + abs(left_dist)
+            return (left_fit, fr.x_right - fr.x_left)
+        return min(narrow, key=score)
     if containing:
         # Split a giant frame: left headers → [x_left, mid], right → [mid, x_right].
         fr = min(containing, key=lambda fr: fr.x_right - fr.x_left)
@@ -184,36 +263,60 @@ def _best_chain_for_header(
     curves: list[Stroke],
     claimed: set[int],
 ) -> Stroke | None:
-    """Pick the longest unclaimed body stroke in this track matching header style."""
+    """Pick the longest unclaimed body stroke in this track matching header style.
+
+    White strokes with matching width/dash are accepted when the legend colour is
+    black (Schlumberger draws some wrap/backup curves in white — e.g. AT20).
+    Non-white matches still win when both exist.
+    """
     candidates: list[tuple[float, Stroke]] = []
     for s in _body_segs(curves):
         if id(s) in claimed:
             continue
-        if is_near_white(s.color):
-            continue
         x_med = float(np.median(s.pts[:, 0]))
         if not (fr.x_left - 5 <= x_med <= fr.x_right + 5):
             continue
-        # Hard filters when legend style is known — length must not override style.
-        if h.color is not None and not is_near_black(h.color):
-            if sum((float(a) - float(b)) ** 2 for a, b in zip(s.color, h.color)) > 0.05:
+        white = is_near_white(s.color)
+        if white:
+            # White wrap/backup is used on log resistivity tracks (e.g. AT20).
+            if h.kind != "log" or h.color is None or not is_near_black(h.color):
                 continue
-        elif h.color is not None and is_near_black(h.color):
-            if not is_near_black(s.color):
+            if h.dash is not None and bool(s.dash) != bool(h.dash):
                 continue
-        if h.dash is not None and bool(s.dash) != bool(h.dash):
-            continue
-        if h.width is not None and abs(s.width - h.width) > 1.5:
-            continue
+            if h.width is not None and abs(s.width - h.width) > 1.5:
+                continue
+            if not s.dash and s.width < 2.5:
+                continue
+        else:
+            if h.color is not None and not is_near_black(h.color):
+                if sum((float(a) - float(b)) ** 2 for a, b in zip(s.color, h.color)) > 0.05:
+                    continue
+            elif h.color is not None and is_near_black(h.color):
+                if not is_near_black(s.color):
+                    continue
+            if h.dash is not None and bool(s.dash) != bool(h.dash):
+                continue
+            if h.width is not None and abs(s.width - h.width) > 1.5:
+                continue
         dist = style_distance(
-            s.color, s.width, tuple(s.dash),
+            s.color if not white else (0.0, 0.0, 0.0), s.width, tuple(s.dash),
             h.color, h.width, h.dash,
         )
+        dx = float(np.ptp(s.pts[:, 0]))
+        # TENS (linear, black dash) is a narrow strip; AT20 (log, same dash) spans the track.
+        if h.kind == "linear" and h.dash and dx > 80:
+            continue
+        if h.kind == "log" and h.dash and not white and dx < 40:
+            continue
         score = float(len(s.pts))
-        score += 0.5 * float(np.ptp(s.pts[:, 0]))
+        score += 0.5 * dx
         score += 5000.0 * (1.0 / (1.0 + dist))
         if h.width is not None:
             score += 200.0 * (1.0 - min(abs(s.width - h.width) / 5.0, 1.0))
+        # Prefer strokes near the header's scale column (TENS vs AT* share black dash).
+        score -= 2.5 * abs(x_med - h.x)
+        if white:
+            score -= 500.0  # prefer inked stroke when both match
         candidates.append((score, s))
     if not candidates:
         return None
@@ -328,6 +431,7 @@ def traces_from_page(
             unit=h.unit, kind=h.kind, page_index=page.page_index,
             info={"n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
                   "track": (fr.x_left, fr.x_right),
+                  "v_left": h.v_left, "v_right": h.v_right,
                   "legend_style": {"color": h.color, "width": h.width, "dash": h.dash}},
         ))
     return out
@@ -345,10 +449,22 @@ def stitch_traces(traces: list[CurveTrace]) -> list[CurveTrace]:
         d, v = d[order], v[order]
         _, idx = np.unique(np.round(d, 5), return_index=True)
         idx.sort()
+        d, v = d[idx], v[idx]
         t0 = group[0]
+        v_left = t0.info.get("v_left")
+        v_right = t0.info.get("v_right")
+        if v_left is None:
+            for g in group:
+                if "v_left" in g.info:
+                    v_left, v_right = g.info["v_left"], g.info["v_right"]
+                    break
+        if v_left is not None and v_right is not None and t0.kind == "linear":
+            v = unwrap_continuity(d, v, float(v_left), float(v_right), kind="linear")
         out.append(CurveTrace(
-            mnemonic=mnem, depth=d[idx], value=v[idx], color=t0.color, unit=t0.unit,
-            kind=t0.kind, info={"n_pages": len(group), "n_pts": int(len(idx))},
+            mnemonic=mnem, depth=d, value=v, color=t0.color, unit=t0.unit,
+            kind=t0.kind,
+            info={"n_pages": len(group), "n_pts": int(len(d)),
+                  "v_left": v_left, "v_right": v_right},
         ))
     return out
 

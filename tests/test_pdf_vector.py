@@ -112,3 +112,22 @@ def test_style_distance_and_unwrap():
     # Point after wrap (index 4) should be > one decade above its unwrapped scale value.
     base4 = float(scale(np.array([30.0]))[0])
     assert vals[4] > base4 * 50  # at least ~one decade up
+
+
+def test_unwrap_continuity_linear():
+    from pylogdigitizer.pdf_vector.assemble import unwrap_continuity
+    # Deep on-scale 300, shallow wrapped as 475 (=75+400); span from scale 100-500.
+    depth = np.array([100.0, 200.0, 3000.0, 3100.0])
+    value = np.array([475.0, 480.0, 300.0, 310.0])  # shallow wrapped
+    out = unwrap_continuity(depth, value, 100.0, 500.0, kind="linear")
+    assert out[2] == pytest.approx(300.0)
+    assert out[0] == pytest.approx(75.0, abs=1.0)
+    assert out[1] == pytest.approx(80.0, abs=1.0)
+
+
+def test_unwrap_continuity_preserves_on_scale():
+    from pylogdigitizer.pdf_vector.assemble import unwrap_continuity
+    depth = np.array([1000.0, 1100.0, 1200.0])
+    value = np.array([140.0, 145.0, 150.0])
+    out = unwrap_continuity(depth, value, 100.0, 500.0, kind="linear")
+    assert np.allclose(out, value)

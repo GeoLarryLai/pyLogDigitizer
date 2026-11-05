@@ -268,30 +268,50 @@ def legend_colors_from_strokes(headers, strokes):
 
 
 def parse_well_header(texts: list[TextItem] | str) -> dict[str, str]:
-    blob = texts if isinstance(texts, str) else "\n".join(t.text for t in texts)
+    """Pull WELL/COMP/FLD/LOC/elevations/DATE from title-page text items."""
+    if isinstance(texts, str):
+        items = [TextItem(text=line, x=0, y=0, size=10) for line in texts.splitlines() if line.strip()]
+    else:
+        items = list(texts)
+    blob = "\n".join(t.text for t in items)
     well: dict[str, str] = {}
     patterns = {
         "WELL": r"Well\s*:\s*([^\n|]+)",
         "COMP": r"Company\s*:\s*([^\n|]+)",
         "FLD": r"Field\s*:\s*([^\n|]+)",
         "CNTY": r"County\s*:\s*([^\n|,]+)",
-        "DATE": r"(?:Creation\s*Date|Date)\s*:\s*([0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{2,4}[^\n|]*)",
+        "CTRY": r"Country\s*:\s*([^\n|]+)",
+        "DATE": r"(?:Creation\s*Date|Logging\s*Date|Date)\s*:?\s*([0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{2,4})",
     }
     for k, pat in patterns.items():
-        m = re.search(pat, blob, re.I)
-        if m:
-            well[k] = m.group(1).strip()
-    m = re.search(r"Lat\s*:\s*([-\d.]+)\s*,?\s*Long\s*:\s*([-\d.]+)", blob, re.I)
-    if m:
-        well["LOC"] = f"Lat {m.group(1)} Long {m.group(2)}"
+        m_ = re.search(pat, blob, re.I)
+        if m_ and m_.group(1).strip():
+            well[k] = m_.group(1).strip()
+    labels = {
+        "well": "WELL", "company": "COMP", "field": "FLD", "county": "CNTY",
+        "country": "CTRY", "logging date": "DATE", "date": "DATE",
+    }
+    for i, t_ in enumerate(items):
+        key = t_.text.strip().rstrip(":").lower()
+        if key in labels and labels[key] not in well and i + 1 < len(items):
+            val = items[i + 1].text.strip()
+            if val and not val.endswith(":"):
+                well[labels[key]] = val
+    if "DATE" not in well:
+        m_ = re.search(r"\b([0-9]{2}-[A-Za-z]{3}-[0-9]{4})\b", blob)
+        if m_:
+            well["DATE"] = m_.group(1)
+    m_ = re.search(r"Lat\s*:\s*([-\d.]+)\s*,?\s*Long\s*:\s*([-\d.]+)", blob, re.I)
+    if m_:
+        well["LOC"] = f"Lat {m_.group(1)} Long {m_.group(2)}"
     for key, pat in (
         ("EKB", r"K\.?B\.?\s*([-\d.]+)\s*ft"),
         ("EGL", r"G\.?L\.?\s*([-\d.]+)\s*ft"),
         ("EDF", r"D\.?F\.?\s*([-\d.]+)\s*ft"),
     ):
-        m = re.search(pat, blob, re.I)
-        if m:
-            well[key] = m.group(1)
+        m_ = re.search(pat, blob, re.I)
+        if m_:
+            well[key] = m_.group(1)
     return well
 
 
