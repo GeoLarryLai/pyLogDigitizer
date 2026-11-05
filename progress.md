@@ -37,3 +37,12 @@
   - On WEATHERFORD the style evidence is weak: gap share is 0.022 vs 0.052 and widths are 13 vs 10 px. The thin trace (cand 1) fits both KGS curves better (|r| NPHI 0.55, DPHI 0.83), so "dashed=NPHI" gives the wrong NPHI.
   - The traces still collapse within 6 px for 12% of the depth.
 - Figures: /workspace/pld_viz_out/seed_wrap2/.
+
+## Curve-identity segmenter (2026-11-05)
+- 5-class U-Net (paper/grid/curveA/curveB/text) trained on 3000 synthetic tiles from KGS curves, with WEATHERFORD excluded. curveA is the heavier, mostly solid stroke; curveB is the stroke 0.7x as wide, solid, dashed or dotted. Training ran 3000 steps on the box CPU in 2229 s.
+  - Synthetic val IoU: paper .985, grid .966, curveA .573, curveB .277, text .722, any-curve .788. A/B identity accuracy on curve pixels is 0.73.
+  - The model is in /workspace/pld_bench/curve_id_seg/seg_unet.onnx.
+- Code: seeded_multi_trace(class_inks=...) seeds and traces each class on its own ink, with mutual exclusion. digitize_curve(class_role="A"|"B") turns this on, and scan_segmenter.curve_class_probability returns the per-class maps.
+- WEATHERFORD gate (figures first): 90% of track-2 curve ink is labelled A. Pixels under the NPHI/DPHI traces are 71%/86% A and only 4% B, so the model does not separate the two curves on the real scan.
+  - No NPHI/DPHI benchmark was run, because class-seeded tracing on 4% B ink would trace noise.
+  - Figures: /workspace/pld_viz_out/curve_id_seg/seg_classes_{2528,2624}.png.
