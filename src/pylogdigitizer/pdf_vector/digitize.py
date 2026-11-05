@@ -73,10 +73,36 @@ class DigitizedLog:
         self.depth = grid
 
 
+def _page_curve_stroke_score(reader: PdfReader, page_index: int) -> int:
+    """How curve-like is this page? Deprioritize VDL/waveform pages (many short flats)."""
+    from pylogdigitizer.pdf_vector.extract import extract_page
+    import numpy as np
+    pv = extract_page(reader, page_index)
+    tall = 0
+    short_flat = 0
+    for s in pv.strokes:
+        if len(s.pts) < 2:
+            continue
+        dx = float(np.ptp(s.pts[:, 0]))
+        dy = float(np.ptp(s.pts[:, 1]))
+        if dy > 40 and len(s.pts) >= 20:
+            tall += 1
+        elif dy < 8 and dx < 40:
+            short_flat += 1
+    # Waveform pages: thousands of short flats, few tall curves.
+    if short_flat > 500 and tall < 5:
+        return 0
+    return tall
+
+
 def _log_pages(reader: PdfReader) -> list[int]:
-    """Pages that look like log plots (vertical oilfield or horizontal USGS)."""
+    """Pages that look like log plots (vertical oilfield or horizontal USGS).
+
+    Prefers pages with depth ticks *and* tall curve strokes; skips VDL/waveform
+    strips that only have depth labels.
+    """
     import re
-    out = []
+    candidates = []
     for i, page in enumerate(reader.pages):
         texts = []
         def visitor(text, cm, tm, fd, fs):  # noqa: ARG001
@@ -86,16 +112,57 @@ def _log_pages(reader: PdfReader) -> list[int]:
         deep = sum(1 for t in texts if re.fullmatch(r"\d{3,5}", t) and 50 <= int(t) <= 50000)
         shallow = sum(1 for t in texts if re.fullmatch(r"\d{1,5}", t) and 0 <= int(t) <= 50000)
         if deep >= 4 or shallow >= 8:
-            out.append(i)
-    return out
+            candidates.append(i)
+    if not candidates:
+        return []
+    # Keep pages with real curves; skip expensive scoring when few candidates.
+    if len(candidates) <= 12:
+        scored = [(_page_curve_stroke_score(reader, i), i) for i in candidates]
+    else:
+        # Score a stride of pages, keep those plus neighbours of hits.
+        stride = max(1, len(candidates) // 12)
+        probe = candidates[::stride]
+        scored = [(_page_curve_stroke_score(reader, i), i) for i in probe]
+        hit = {i for s, i in scored if s >= 3}
+        # Expand hits by ±1 in the candidate list.
+        idx = {c: n for n, c in enumerate(candidates)}
+        keep = set()
+        for i in hit:
+            n = idx[i]
+            for j in range(max(0, n - 1), min(len(candidates), n + 2)):
+                keep.add(candidates[j])
+        if keep:
+            return [c for c in candidates if c in keep]
+    good = [i for s, i in scored if s >= 3]
+    return good if good else candidates
 
 
 def _collect_headers(reader: PdfReader, page_indices: list[int]) -> list[CurveHeader]:
-    """Gather curve headers; apply legend styles from the richest matching page only."""
+    """Gather curve headers; apply legend styles from rich legend pages.
+
+    Also scans body pages that carry scale labels (some digital prints only
+    print scales on the first log panel, not a trailing legend sheet).
+    """
     from dataclasses import replace as _dc_replace
+    from pylogdigitizer.pdf_vector.calibrate import parse_scale_label
+
+    scale_pages = []
+    for i, page in enumerate(reader.pages):
+        texts = []
+        def visitor(text, cm, tm, fd, fs, _acc=texts):  # noqa: ARG001
+            if text and str(text).strip():
+                _acc.append(str(text).strip())
+        try:
+            page.extract_text(visitor_text=visitor)
+        except Exception:
+            continue
+        n_sc = sum(1 for t in texts if parse_scale_label(t))
+        if n_sc >= 2:
+            scale_pages.append(i)
 
     order = list(dict.fromkeys(
         list(range(max(0, len(reader.pages) - 5), len(reader.pages)))
+        + scale_pages
         + sorted(page_indices, reverse=True)
         + list(range(min(5, len(reader.pages))))
         + list(page_indices)

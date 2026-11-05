@@ -15,7 +15,10 @@ from pylogdigitizer.pdf_vector.extract import TextItem, Stroke
 
 _DEPTH_RE = re.compile(r"^(\d{1,5})$")
 _SCALE_RE = re.compile(
-    r"^\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9./%°°^_\-\s]*)\s*$"
+    r"^\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*([A-Za-z][A-Za-z0-9./%°°^_\-\s]*)\s*$"
+)
+_WAVEFORM_MNEM_RE = re.compile(
+    r"^(?:WF\d*|PKSL|PKCH|NPK|SPJ|.*_RA_(?:LT|UT))$", re.I
 )
 _SCALE_SINGLE_RE = re.compile(
     r"^\s*(-?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9./%°°^_\-]*)\s*$"
@@ -78,10 +81,9 @@ def parse_scale_label(text: str) -> tuple[float, float, str, str] | None:
     unit = unit.strip()
     unit_l = unit.lower().replace("°", "").replace(" ", "")
     span_ratio = max(abs(v0), abs(v1), 1e-12) / max(min(abs(v0), abs(v1)), 1e-12)
-    # Log only for resistivity-like units (or explicit ohm). Span alone is not enough
-    # (USGS "3 300 Ft^2/d" is linear transmissivity).
-    logish = ("ohm" in unit_l) or unit_l in {"ohmm", "ohm.m", "ohm-m"}
-    if logish and v0 > 0 and v1 > 0:
+    # Log only for wide-span resistivity (decade+). Narrow ohm ranges (60–80) stay linear.
+    ohmish = ("ohm" in unit_l) or unit_l in {"ohmm", "ohm.m", "ohm-m"}
+    if ohmish and v0 > 0 and v1 > 0 and span_ratio >= 20:
         return v0, v1, unit, "log"
     if (not unit_l) and v0 > 0 and v1 > 0 and span_ratio >= 50:
         return v0, v1, unit, "log"
@@ -228,6 +230,31 @@ def _mnemonic_from_title(text: str) -> tuple[str, str] | None:
     return mnem, cleaned
 
 
+
+def _unit_fits_mnemonic(mnemonic: str, unit: str) -> bool:
+    """Reject obvious title/scale mispairs (generic, not well-specific)."""
+    m = mnemonic.upper()
+    u = (unit or "").lower().replace(" ", "")
+    if not u:
+        return True
+    # Tension is force, not temperature / resistivity.
+    if m in {"TENS", "CTEN", "CABLE_DRAG"} and any(x in u for x in ("deg", "ohm", "gapi", "api")):
+        return False
+    # Temperature not force / resistivity / gamma.
+    if m in {"MTEM", "TEMP", "GTEM", "CTEM"} and (
+        "lbf" in u or "ohm" in u or "gapi" in u or "api" in u or "cps" in u
+    ):
+        return False
+    if m in {"RES", "AT20", "AT30", "AT60", "AT90"} and (
+        "deg" in u or "lbf" in u or "gapi" in u
+    ):
+        return False
+    # Gamma not porosity / sonic.
+    if m in {"ECGR_STGC", "GR_STGC", "GR"} and any(x in u for x in ("us/ft", "m3/m3", "ft3/ft3", "ohm")):
+        return False
+    return True
+
+
 def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
     """Pair each curve title with the scale label immediately below it (same x band).
 
@@ -265,6 +292,8 @@ def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
                 sc = parse_scale_label(s.text)
                 if sc is None:
                     continue
+                if not _unit_fits_mnemonic(mnem, sc[2]):
+                    continue
                 dist = (t.y - s.y) + 0.05 * abs(s.x - t.x)
                 if best is None or dist < best[0]:
                     best = (dist, j, sc, s)
@@ -286,6 +315,8 @@ def parse_curve_headers(texts: list[TextItem]) -> list[CurveHeader]:
         if h.mnemonic in seen:
             continue
         if h.mnemonic.startswith(bad_prefix) or h.mnemonic in {"MAIN", "REPEAT", "TO", "DRAG"}:
+            continue
+        if _WAVEFORM_MNEM_RE.match(h.mnemonic):
             continue
         seen.add(h.mnemonic)
         out.append(h)

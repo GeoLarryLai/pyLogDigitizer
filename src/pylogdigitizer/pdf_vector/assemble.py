@@ -63,6 +63,16 @@ def classify_strokes(strokes: list[Stroke]) -> tuple[list[Stroke], list[Stroke],
             curves.append(s)
         elif is_near_black(s.color) and not s.dash and s.width >= 2.5 and dy > 40 and dx > 1.5:
             curves.append(s)
+        elif (
+            is_near_black(s.color)
+            and not s.dash
+            and dy > 80
+            and dx > 5
+            and len(s.pts) >= 40
+            and s.width <= 2.0
+        ):
+            # Thin black digital-print curves (e.g. USGS GeoLog Locator vertical strips).
+            curves.append(s)
     return grid_h, grid_v, curves
 
 
@@ -399,11 +409,26 @@ def _frame_for_header(h: CurveHeader, frames: list[TrackFrame], page_width: floa
     return TrackFrame(x_left=x0, x_right=min(page_width, x0 + 180.0))
 
 
+
+def _mnemonic_label_x(texts, mnemonic: str) -> float | None:
+    """X of a footer/header mnemonic label on the page (exact token match)."""
+    want = mnemonic.upper()
+    xs = []
+    for t in texts:
+        tok = t.text.strip().upper().replace(" ", "_")
+        if tok == want or tok.rstrip(".") == want:
+            xs.append(t.x)
+    if not xs:
+        return None
+    return float(sorted(xs)[len(xs) // 2])
+
+
 def _best_chain_for_header(
     h: CurveHeader,
     fr: TrackFrame,
     curves: list[Stroke],
     claimed: set[int],
+    label_x: float | None = None,
 ) -> Stroke | None:
     """Pick the longest unclaimed body stroke in this track matching header style.
 
@@ -457,6 +482,12 @@ def _best_chain_for_header(
             score += 200.0 * (1.0 - min(abs(s.width - h.width) / 5.0, 1.0))
         # Prefer strokes near the header's scale column (TENS vs AT* share black dash).
         score -= 2.5 * abs(x_med - h.x)
+        # When legend style is missing, pin to on-page mnemonic label x (footer).
+        if h.color is None and label_x is not None:
+            score -= 8.0 * abs(x_med - label_x)
+            # Soft preference for coloured/dashed strokes over plain grids.
+            if not is_near_black(s.color) or s.dash or s.width >= 4.5:
+                score += 400.0
         if white:
             score -= 500.0  # prefer inked stroke when both match
         candidates.append((score, s))
@@ -706,7 +737,16 @@ def traces_from_page(
         if h.mnemonic in skip:
             continue
         fr = _frame_for_header(h, frames, page.width)
-        chain = _best_chain_for_header(h, fr, curves, claimed)
+        label_x = _mnemonic_label_x(page.texts, h.mnemonic)
+        # If label sits in a different column than the scale-text frame, prefer label track.
+        if label_x is not None and not (fr.x_left - 20 <= label_x <= fr.x_right + 20):
+            for cand in frames:
+                if cand.x_left - 20 <= label_x <= cand.x_right + 20:
+                    fr = cand
+                    break
+            else:
+                fr = TrackFrame(x_left=max(0.0, label_x - 90), x_right=min(page.width, label_x + 90))
+        chain = _best_chain_for_header(h, fr, curves, claimed, label_x=label_x)
         if chain is None:
             continue
         claimed.add(id(chain))

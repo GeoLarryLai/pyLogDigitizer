@@ -176,3 +176,17 @@ def test_off_chart_wrap_detect_and_note():
     assert meta["has_off_chart_wrap"] and meta["n_wraps"] >= 1
     assert "opposite" in OFF_CHART_WRAP_NOTE.lower() or "left" in OFF_CHART_WRAP_NOTE.lower()
     assert "decade" in OFF_CHART_WRAP_NOTE.lower()
+
+
+def test_glued_scale_unit_and_thin_black_curve():
+    from pylogdigitizer.pdf_vector.assemble import classify_strokes
+    from pylogdigitizer.pdf_vector.extract import Stroke
+    assert parse_scale_label("150 200US/CM") == (150.0, 200.0, "US/CM", "linear")
+    assert parse_scale_label("60 80 OHM-M")[3] == "linear"
+    assert parse_scale_label("0.2 2000 ohm.m")[3] == "log"
+    # Thin black tall stroke counts as a curve (USGS-style).
+    xs = np.linspace(30, 50, 80)
+    ys = np.linspace(100, 700, 80)
+    thin = Stroke(pts=np.column_stack([xs, ys]), color=(0.0, 0.0, 0.0), width=0.3)
+    _gh, _gv, curves = classify_strokes([thin])
+    assert len(curves) == 1
