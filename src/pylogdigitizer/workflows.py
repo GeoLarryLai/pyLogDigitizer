@@ -183,7 +183,9 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     vmode = trace_kw.pop("vector_trace", False)
     amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True), the panel ("panel") or the segmenter's curve ink ("model")
     seg_model = trace_kw.pop("seg_model", None)
-    seed_curves = trace_kw.pop("seed_curves", False)    # with "model": independent seeds for multi-curve tracks
+    seed_curves = trace_kw.pop("seed_curves", False)
+    seed_role = trace_kw.pop("seed_role", None)        # line style of the wanted curve when no legend: dashed/solid/thick/thin
+    clip_null = trace_kw.pop("clip_null", None)        # null where the curve is clipped at the track edge (default: on with "model")    # with "model": independent seeds for multi-curve tracks
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
         if vmode == "v1":
@@ -221,7 +223,14 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             cands = T.get("candidates") or [T]
             seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if (len(cands) > 1 and seed_curves) else []
             if len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
-                for t, sd in zip(cands, at.match_to(cands, seeded)):
+                order = at.match_to(cands, seeded)
+                if seed_role:     # identity from line style: the wanted style goes to the picked candidate
+                    k = at.role_by_style(seeded, seed_role); pi = cands.index(T) if T in cands else 0
+                    rest = [sd for j, sd in enumerate(seeded) if j != k]
+                    order = rest[:pi] + [seeded[k]] + rest[pi:]
+                    checks["seed_styles"] = [dict(width=round(float(np.median(sd["width"])), 1), gap=round(sd["gap_frac"], 3)) for sd in seeded]
+                checks["reseeds"] = [sd["reseeds"] for sd in seeded]
+                for t, sd in zip(cands, order):
                     nx = sd["x"][:len(t["x"])]
                     t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
                     at._set_x(t, nx, np.ones(len(nx), bool))
@@ -241,6 +250,10 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         for a, b, xb in wb:
             v[a:b] = mk(0, width, *backup)(xb)
         checks["model_wraps"] = [(int(a), int(b)) for a, b, _ in wb]
+    if (clip_null if clip_null is not None else amode == "model"):
+        v = clip_to_null(np.asarray(v, float), np.asarray(T["x"], float), width, wr,
+                         [(a, b) for a, b, _ in (wb if amode == "model" and backup is not None else [])])
+        checks["clipped_null"] = int(np.isnan(v).sum())
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)
     if use_ocr:
@@ -349,6 +362,29 @@ def section_rows(L: Layout, anchors, checks: dict) -> tuple[float, float]:
         lo_a, hi_a = min(a[0] for a in anchors), max(a[0] for a in anchors)
         lr = [r for r in lr if lo_a - sp / 2 <= r <= hi_a] or lr
     return max(L.probe_row, lr[0] - sp), min(L.ink.shape[0], lr[-1] + sp)
+
+
+def clip_to_null(v: np.ndarray, x: np.ndarray, width: float, wraps=(), spans=(), edge: float | None = None,
+                 min_len: int = 3) -> np.ndarray:
+    """Clipping rule: where the trace runs flat along a track edge (the curve is clipped by the fixed
+    scale and no backup curve carries it), the value is unknown, so write NaN for those samples.
+    Samples inside ``wraps`` (sample indices or (a, b) spans) and backup ``spans`` keep their values;
+    edge runs shorter than ``min_len`` samples (a curve touching the edge in passing) are kept."""
+    v = np.array(v, float); x = np.asarray(x, float)
+    e = float(edge if edge is not None else max(3.0, 0.01 * width))
+    at_edge = (x <= e) | (x >= width - 1 - e)
+    keep = np.zeros(len(v), bool)
+    for w in list(wraps) + list(spans):
+        if isinstance(w, (tuple, list)) and len(w) == 2:
+            keep[int(w[0]):int(w[1])] = True
+        else:
+            keep[int(w)] = True
+    m = at_edge & ~keep
+    p = np.r_[0, m.astype(np.int8), 0]; d = np.diff(p)
+    for a, b in zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]):
+        if b - a >= min_len:
+            v[a:b] = np.nan
+    return v
 
 
 def trace_to_values(pan: np.ndarray, T: dict, width: int, scale, scale_type: str = "linear", backup=None,

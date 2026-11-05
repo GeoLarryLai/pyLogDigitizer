@@ -65,3 +65,45 @@ def test_wrap_backup_follows_backup_curve_from_opposite_edge():
     truth = np.interp(np.arange(a, b)[mid] * fy + 1, rb, xb_true)
     assert np.median(np.abs(xb[mid] - truth)) <= 4
     assert at.wrap_backup(_draw(H, W, np.full(H, 100.0), 4), np.full(n, 100.0), fy, W) == []
+
+
+def test_find_seeds_rejects_border_ink():
+    H, W = 300, 400
+    ink = _draw(H, W, np.full(H, 3.0), 4) | _draw(H, W, np.full(H, 120.0), 3) | _draw(H, W, np.full(H, 260.0), 5)
+    s, seeds = at.find_seeds(ink, 3, 2)
+    xs = sorted(round(x) for x, _ in seeds)
+    assert all(abs(a - b) <= 2 for a, b in zip(xs, [120, 260]))
+
+
+def test_role_by_style():
+    seeded = [dict(gap_frac=0.05, width=np.full(5, 6.0)), dict(gap_frac=0.4, width=np.full(5, 2.0))]
+    assert at.role_by_style(seeded, "dashed") == 1 and at.role_by_style(seeded, "solid") == 0
+    assert at.role_by_style(seeded, "thick") == 0 and at.role_by_style(seeded, "thin") == 1
+
+
+def test_seeded_trace_does_not_ride_the_other_curve_after_a_gap():
+    # thin curve B disappears for a stretch next to thick curve A, then reappears farther away:
+    # B must not collapse onto A for the whole gap and must be found again afterwards
+    H, W, fy = 1200, 260, 3
+    y = np.arange(H)
+    xa = np.full(H, 80.0); xb = 140 + 20 * np.sin(y / 60)
+    ink = _draw(H, W, xa, 6)
+    rows_b = np.r_[np.arange(0, 400), np.arange(700, H)]
+    ink |= _draw(H, W, xb[:400], 2, rows=np.arange(400)) | _draw(H, W, xb[700:] + 60, 2, rows=np.arange(700, H))
+    T = at.seeded_multi_trace(ink, fy, 2)
+    rows = np.arange(0, H, fy) + 1
+    late = rows >= 760
+    tb = np.interp(rows[late], np.arange(700, H), xb[700:] + 60)
+    assert np.median(np.abs(T[1]["x"][late] - tb)) <= 3
+    gap = (rows > 450) & (rows < 650)
+    assert np.mean(np.abs(T[1]["x"][gap] - 80) < 6) < 0.8
+
+
+def test_clip_to_null_edges_but_not_wraps():
+    from pylogdigitizer.workflows import clip_to_null
+    x = np.r_[np.full(10, 50.0), np.full(10, 99.0), np.full(10, 50.0), np.full(10, 0.0), np.full(10, 50.0), [99.0, 99.0]]
+    v = x.copy()
+    out = clip_to_null(v, x, 100, wraps=[(30, 40)])
+    assert np.isnan(out[10:20]).all() and np.isfinite(out[:10]).all()
+    assert np.isfinite(out[30:40]).all()                  # wrap span kept (backup carries it)
+    assert np.isfinite(out[-2:]).all()                    # short touch kept
