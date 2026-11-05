@@ -180,9 +180,15 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         checks["grid_lines"] = 0 if lat is None else int(lat.X.shape[1])
     nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "auto")
     vec = None
-    if trace_kw.pop("vector_trace", False):   # vectorize first, drop grid vectors, trace curve vectors only
+    vmode = trace_kw.pop("vector_trace", False)
+    if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
-        vec = vz.vector_separate(pan, n_curves=nc)
+        if vmode == "v1":
+            vec = vz.vector_separate(pan, n_curves=nc)
+        else:     # linked chains; text is decided on vectors, so the raster text mask is off
+            vec = vz.vector_separate_v2(pan, n_curves=nc)
+            trace_kw["mask_other"] = False
+            checks["vector_rescued"] = vec["n_rescued"]; checks["vector_text_fixed"] = vec["n_text_fixed"]
         checks["vector_segments"] = int(sum(s is not None for s in vec["V"]["segs"]))
         checks["vector_grid_segments"] = int((vec["cls"] == vz.GRID).sum())
     tpan = pan if vec is None else vec["curve_ink"]
@@ -194,6 +200,9 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         checks["curve_scores"] = [round(float(t["score"]), 3) for t in T["candidates"]]
     else:
         T = ct.trace_track(tpan, r0, px_per_ft=dm.px_per_ft, **trace_kw)
+    if vec is not None and vmode != "v1":
+        T = vz.apply_chains(T, vec, pan.shape, n_curves=nc)
+        checks["vector_fallback_rows"] = int(T.get("vector_fallback", 0))
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)
