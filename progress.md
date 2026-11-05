@@ -50,3 +50,9 @@
 ## Per-well line hint (2026-11-05)
 - New option digitize_curve(line_hint=thin|thick|dashed|solid|left|right) for scans without a legend. It only says which seeded line this curve is and never uses LAS values. The curve-id model stays opt-in and is unused by default, and style tuning is stopped.
 - WEATHERFORD: the hint NPHI=thin, DPHI=thick picks exactly the same seeded lines as the seed_wrap2 style rule. The thin line (9.6 px) is also the dashed one, and the thick line (13.1 px) the solid one. Scores are therefore identical: NPHI 0.475, DPHI 0.820 (old 0.485/0.748). I did not rerun them; the figures in /workspace/pld_viz_out/hint_nphi/ are made from the seed_wrap2 traces.
+
+## Easier KGS ink scans, default model path (2026-11-05)
+- Settings as on WEATHERFORD (model mode, curve wraps and nulls at clipped edges), with no seeding and no tuning.
+- Chitwood_12 GR:2: r_reg 0.993, 53 s run, 329 clipped samples set to null.
+- Swanson_1 GR: r_reg 0.736, 9 s run. The scan covers only about 500-1050 ft. Over that stretch the trace follows the ink closely. It skips across with straight connector lines where the curve leaves the track, which may be a backup that was missed.
+- Figures: /workspace/pld_viz_out/easy_ink/.
