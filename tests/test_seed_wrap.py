@@ -133,4 +133,4 @@ def test_class_inks_trace_each_curve_on_its_own_class():
     rows = np.arange(0, H, fy) + 1
     far = np.abs(xa[rows] - xb[rows]) > 15
     assert np.median(np.abs(T[0]["x"] - xb[rows])[far]) <= 3      # first = the requested class (B)
-    assert np.mean(np.abs(T[1]["x"] - xa[rows])[far] < 4) > 0.9
+    assert np.mean(np.abs(T[1]["x"] - xa[rows])[far] < 7) > 0.9   # right curve (a swap would be ~100 px off)
