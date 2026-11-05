@@ -163,3 +163,16 @@ def test_page_layout_regions_api():
     kinds = {r.kind for r in layout.regions}
     # Tiny fixture is vertical with scales at top.
     assert "scale_legend" in kinds or "track" in kinds or "depth_axis" in kinds
+
+
+def test_off_chart_wrap_detect_and_note():
+    from pylogdigitizer.pdf_vector.assemble import detect_wrap_jumps, OFF_CHART_WRAP_NOTE
+    from pylogdigitizer.pdf_vector.extract import Stroke
+    scale = ScaleMap(0, 100, 0.2, 2000, "log")
+    # Right-edge then jump to left (wrap).
+    xs = np.array([30.0, 50.0, 97.0, 3.0, 25.0])
+    ys = np.array([500.0, 480.0, 460.0, 440.0, 420.0])
+    meta = detect_wrap_jumps(np.column_stack([xs, ys]), scale, edge_tol=4.0)
+    assert meta["has_off_chart_wrap"] and meta["n_wraps"] >= 1
+    assert "opposite" in OFF_CHART_WRAP_NOTE.lower() or "left" in OFF_CHART_WRAP_NOTE.lower()
+    assert "decade" in OFF_CHART_WRAP_NOTE.lower()

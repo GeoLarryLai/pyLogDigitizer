@@ -129,6 +129,147 @@ def unwrap_log_wraps(
 
 
 
+
+OFF_CHART_WRAP_NOTE = (
+    "Off-chart wrap: when a log curve overflows the track scale it reappears on "
+    "the opposite (usually left) edge and must be valued on the next decade / "
+    "backup scale — not as a raw in-scale reading. Edge pixels with no wrap "
+    "continuation stay null (clipped)."
+)
+
+
+def detect_wrap_jumps(
+    pts: np.ndarray,
+    scale: ScaleMap,
+    edge_tol: float = 3.0,
+) -> dict:
+    """Detect right→left (or left→right) off-chart wrap jumps along a stroke.
+
+    Returns ``{n_wraps, wrap_indices, has_off_chart_wrap}``. Edge samples alone
+    are not wraps — a large opposite-edge jump is required.
+    """
+    if scale.kind != "log" or len(pts) < 4:
+        return {"n_wraps": 0, "wrap_indices": [], "has_off_chart_wrap": False}
+    lo, hi = (scale.x_left, scale.x_right) if scale.x_left < scale.x_right else (scale.x_right, scale.x_left)
+    span = max(hi - lo, 1e-9)
+    order = np.argsort(-pts[:, 1])
+    xs = pts[order, 0]
+    edge_l = xs <= lo + edge_tol
+    edge_r = xs >= hi - edge_tol
+    # Also treat "near" bands (15% of span) so soft wraps still count.
+    near_l = xs <= lo + 0.15 * span
+    near_r = xs >= hi - 0.15 * span
+    wraps = []
+    for i in range(1, len(xs)):
+        dx = xs[i] - xs[i - 1]
+        if (edge_r[i - 1] or near_r[i - 1]) and (edge_l[i] or near_l[i]) and dx < -0.35 * span:
+            wraps.append(int(order[i]))
+        elif (edge_l[i - 1] or near_l[i - 1]) and (edge_r[i] or near_r[i]) and dx > 0.35 * span:
+            wraps.append(int(order[i]))
+    return {
+        "n_wraps": len(wraps),
+        "wrap_indices": wraps,
+        "has_off_chart_wrap": len(wraps) > 0,
+    }
+
+
+def find_off_chart_wrap_strokes(
+    primary: Stroke,
+    candidates: list[Stroke],
+    claimed: set[int],
+    fr: TrackFrame,
+    h: CurveHeader,
+) -> list[Stroke]:
+    """Find backup / off-chart wrap strokes for a log curve.
+
+    Schlumberger draws the overflow continuation on the opposite (left) edge,
+    often in white when the legend colour is black. Match by track + left bias
+    + depth overlap with the primary near the right edge.
+    """
+    if h.kind != "log":
+        return []
+    lo, hi = fr.x_left, fr.x_right
+    span = max(hi - lo, 1e-9)
+    prim = primary.pts
+    # Depths (via -y) where primary hugs the right edge.
+    right_mask = prim[:, 0] >= hi - 0.2 * span
+    if right_mask.sum() < 3:
+        return []
+    y_right = prim[right_mask, 1]
+    y0, y1 = float(y_right.min()), float(y_right.max())
+    out: list[Stroke] = []
+    for s in candidates:
+        if id(s) in claimed or id(s) == id(primary):
+            continue
+        if len(s.pts) < 20:
+            continue
+        x_med = float(np.median(s.pts[:, 0]))
+        if not (lo - 5 <= x_med <= hi + 5):
+            continue
+        # Must sit in the left ~35% of the track (reappears on opposite edge).
+        left_frac = float(np.mean(s.pts[:, 0] <= lo + 0.35 * span))
+        if left_frac < 0.7:
+            continue
+        # Depth overlap with primary's right-edge run.
+        y_ov = (s.pts[:, 1] >= y0 - 20) & (s.pts[:, 1] <= y1 + 20)
+        if y_ov.sum() < 10:
+            continue
+        white = is_near_white(s.color)
+        if white:
+            if h.color is not None and not is_near_black(h.color):
+                # Coloured legend: white wrap only if dash/width roughly match.
+                if h.dash is not None and bool(s.dash) != bool(h.dash):
+                    continue
+        else:
+            # Same-colour backup: require colour match.
+            if h.color is not None:
+                if sum((float(a) - float(b)) ** 2 for a, b in zip(s.color, h.color)) > 0.08:
+                    continue
+            elif not is_near_black(s.color):
+                continue
+        out.append(s)
+    return out
+
+
+def merge_wrap_stroke_values(
+    depth: np.ndarray,
+    value: np.ndarray,
+    wrap_stroke: Stroke,
+    depth_map: DepthMap,
+    scale: ScaleMap,
+    decade_k: int = 1,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Append a left-edge wrap stroke valued on decade ``k`` (default +1).
+
+    Edge pixels of the wrap stroke stay null; interior samples get
+    ``scale(x) * decade**k``. Returns updated depth/value and n points added.
+    """
+    if scale.kind != "log" or scale.v_left <= 0 or scale.v_right <= 0:
+        return depth, value, 0
+    decade = scale.v_right / scale.v_left
+    if decade <= 1:
+        decade = scale.v_left / scale.v_right
+    lo, hi = (scale.x_left, scale.x_right) if scale.x_left < scale.x_right else (scale.x_right, scale.x_left)
+    pts = wrap_stroke.pts
+    d = np.asarray(depth_map(-pts[:, 1]), float)
+    base = np.asarray(scale(pts[:, 0]), float)
+    edge = (pts[:, 0] <= lo + 1.5) | (pts[:, 0] >= hi - 1.5)
+    v = base * (decade ** decade_k)
+    v = v.copy()
+    v[edge] = np.nan
+    ok = np.isfinite(d) & np.isfinite(v)
+    if ok.sum() < 5:
+        return depth, value, 0
+    depth2 = np.concatenate([depth, d[ok]])
+    value2 = np.concatenate([value, v[ok]])
+    order = np.argsort(depth2)
+    depth2, value2 = depth2[order], value2[order]
+    _, idx = np.unique(np.round(depth2, 6), return_index=True)
+    idx.sort()
+    return depth2[idx], value2[idx], int(ok.sum())
+
+
+
 def unwrap_continuity(
     depth: np.ndarray,
     value: np.ndarray,
@@ -570,6 +711,9 @@ def traces_from_page(
             continue
         claimed.add(id(chain))
         scale = ScaleMap(fr.x_left, fr.x_right, h.v_left, h.v_right, h.kind)
+        wrap_meta = detect_wrap_jumps(chain.pts, scale) if h.kind == "log" else {
+            "n_wraps": 0, "wrap_indices": [], "has_off_chart_wrap": False,
+        }
         if unwrap_log and h.kind == "log":
             depth, value = _points_to_series_log_wrap(chain.pts, depth_map, scale)
         else:
@@ -578,15 +722,47 @@ def traces_from_page(
             _, uniq_idx = np.unique(np.round(depth, 6), return_index=True)
             uniq_idx.sort()
             depth, value = depth[uniq_idx], value[uniq_idx]
+
+        # Attach separate left-edge backup / wrap strokes (white or same style).
+        wrap_strokes = find_off_chart_wrap_strokes(chain, curves, claimed, fr, h)
+        n_wrap_pts = 0
+        wrap_segments = []
+        for ws in wrap_strokes:
+            depth, value, n_add = merge_wrap_stroke_values(
+                depth, value, ws, depth_map, scale, decade_k=1,
+            )
+            if n_add <= 0:
+                continue
+            claimed.add(id(ws))
+            n_wrap_pts += n_add
+            wrap_segments.append({
+                "n_pts": n_add,
+                "x_range": [float(ws.pts[:, 0].min()), float(ws.pts[:, 0].max())],
+                "y_range": [float(ws.pts[:, 1].min()), float(ws.pts[:, 1].max())],
+                "decade_k": 1,
+                "white": bool(is_near_white(ws.color)),
+            })
+            wrap_meta["has_off_chart_wrap"] = True
+            wrap_meta["n_wraps"] = int(wrap_meta.get("n_wraps", 0)) + 1
+
         col = colour_key(chain.color)
+        info = {
+            "n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
+            "track": (fr.x_left, fr.x_right),
+            "v_left": h.v_left, "v_right": h.v_right,
+            "legend_style": {"color": h.color, "width": h.width, "dash": h.dash},
+            "off_chart_wrap": bool(wrap_meta.get("has_off_chart_wrap")),
+            "n_wraps": int(wrap_meta.get("n_wraps", 0)),
+            "n_wrap_pts": int(n_wrap_pts),
+            "wrap_segments": wrap_segments,
+        }
+        if info["off_chart_wrap"]:
+            info["off_chart_wrap_note"] = OFF_CHART_WRAP_NOTE
         out.append(CurveTrace(
             mnemonic=h.mnemonic, depth=depth, value=value,
             color=tuple(float(c) for c in col[:3]),
             unit=h.unit, kind=h.kind, page_index=page.page_index,
-            info={"n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
-                  "track": (fr.x_left, fr.x_right),
-                  "v_left": h.v_left, "v_right": h.v_right,
-                  "legend_style": {"color": h.color, "width": h.width, "dash": h.dash}},
+            info=info,
         ))
     return out
 
@@ -614,11 +790,26 @@ def stitch_traces(traces: list[CurveTrace]) -> list[CurveTrace]:
                     break
         if v_left is not None and v_right is not None and t0.kind == "linear":
             v = unwrap_continuity(d, v, float(v_left), float(v_right), kind="linear")
+        wrap_any = any(bool(g.info.get("off_chart_wrap")) for g in group)
+        wrap_segs = []
+        for g in group:
+            wrap_segs.extend(g.info.get("wrap_segments") or [])
+        info = {"n_pages": len(group), "n_pts": int(len(d)),
+                "v_left": v_left, "v_right": v_right,
+                "off_chart_wrap": wrap_any,
+                "n_wraps": int(sum(int(g.info.get("n_wraps", 0)) for g in group)),
+                "n_wrap_pts": int(sum(int(g.info.get("n_wrap_pts", 0)) for g in group)),
+                "wrap_segments": wrap_segs}
+        if wrap_any:
+            info["off_chart_wrap_note"] = OFF_CHART_WRAP_NOTE
+        # Keep track from first page that has one.
+        for g in group:
+            if "track" in g.info:
+                info["track"] = g.info["track"]
+                break
         out.append(CurveTrace(
             mnemonic=mnem, depth=d, value=v, color=t0.color, unit=t0.unit,
-            kind=t0.kind,
-            info={"n_pages": len(group), "n_pts": int(len(d)),
-                  "v_left": v_left, "v_right": v_right},
+            kind=t0.kind, info=info,
         ))
     return out
 

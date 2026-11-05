@@ -36,6 +36,8 @@ from pylogdigitizer.pdf_vector.assemble import (
     traces_from_page_horizontal,
     stitch_traces,
     apply_clip_nulls,
+    OFF_CHART_WRAP_NOTE,
+    detect_wrap_jumps,
 )
 from pylogdigitizer.pdf_vector.regions import Region, PageLayout, detect_page_layout, annotate_layout_figure
 from pylogdigitizer.pdf_vector.digitize import digitize_pdf, DigitizedLog
@@ -58,6 +60,8 @@ __all__ = [
     "traces_from_page_horizontal",
     "stitch_traces",
     "apply_clip_nulls",
+    "OFF_CHART_WRAP_NOTE",
+    "detect_wrap_jumps",
     "digitize_pdf",
     "DigitizedLog",
     "Region",

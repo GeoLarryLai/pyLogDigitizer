@@ -32,6 +32,7 @@ from pylogdigitizer.pdf_vector.assemble import (
     CurveTrace,
     _hgrid_ys,
     classify_strokes,
+    OFF_CHART_WRAP_NOTE,
 )
 
 
@@ -379,6 +380,40 @@ def detect_page_layout(
                           if np.isfinite(t.value).any() else None},
                 ))
 
+    # Flag scale_legend / curve regions for off-chart log wraps (Larry: overflow
+    # reappears on the opposite edge → next decade / backup scale).
+    log_headers = [h for h in headers if h.kind == "log"]
+    log_traces = [t for t in (traces or []) if t.kind == "log"]
+    wrap_traces = [t for t in (traces or []) if t.info.get("off_chart_wrap")]
+    if log_headers or log_traces:
+        note = OFF_CHART_WRAP_NOTE
+        for r in regions:
+            if r.kind == "scale_legend":
+                r.info["off_chart_wrap_policy"] = True
+                r.info["off_chart_wrap_note"] = note
+                r.info["log_mnemonics"] = sorted({
+                    *(h.mnemonic for h in log_headers),
+                    *(t.mnemonic for t in log_traces),
+                })
+            if r.kind == "track":
+                labs = set((r.info.get("curves") or []) + (r.label.split(",") if r.label else []))
+                if any(h.mnemonic in labs for h in log_headers) or any(t.mnemonic in labs for t in log_traces):
+                    r.info["off_chart_wrap_policy"] = True
+                    r.info["off_chart_wrap_note"] = note
+            if r.kind == "curve":
+                match = next((t for t in (traces or []) if t.mnemonic == r.label), None)
+                if match is not None and match.info.get("off_chart_wrap"):
+                    r.info["off_chart_wrap"] = True
+                    r.info["n_wraps"] = match.info.get("n_wraps", 0)
+                    r.info["n_wrap_pts"] = match.info.get("n_wrap_pts", 0)
+                    r.info["wrap_segments"] = match.info.get("wrap_segments", [])
+                    r.info["off_chart_wrap_note"] = note
+                    # Keep a short label tag for figures / JSON consumers.
+                    if "wrap" not in r.label.lower():
+                        r.label = f"{r.label}|off_chart_wrap"
+        info["off_chart_wrap_curves"] = [t.mnemonic for t in wrap_traces]
+        info["off_chart_wrap_note"] = note if (log_headers or log_traces) else None
+
     return PageLayout(
         page_index=page.page_index, axis=axis,
         width=page.width, height=page.height,
@@ -463,6 +498,24 @@ def annotate_layout_figure(
     ]
     if handles:
         ax.legend(handles=handles, loc="upper right", fontsize=6, framealpha=0.9)
+    # Call out off-chart wrap policy when present on scale regions.
+    wrap_note = next(
+        (r.info.get("off_chart_wrap_note") for r in layout.regions
+         if r.kind == "scale_legend" and r.info.get("off_chart_wrap_note")),
+        None,
+    )
+    if wrap_note:
+        ax.text(
+            0.02, 0.02,
+            "OFF-CHART WRAP: overflow reappears on opposite edge → next decade/backup",
+            transform=ax.transAxes, fontsize=7, color="#d62728",
+            va="bottom", ha="left",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#d62728"),
+        )
+    wrap_curves = [r for r in layout.regions if r.kind == "curve" and r.info.get("off_chart_wrap")]
+    for r in wrap_curves:
+        ax.text(r.x0 + 2, r.y0 + 8, "WRAP", fontsize=7, color="#d62728", fontweight="bold")
+
     ax.set_xlabel("x (pt)")
     ax.set_ylabel("y (pt)")
     fig.tight_layout()
