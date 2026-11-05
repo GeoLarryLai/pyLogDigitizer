@@ -198,6 +198,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     # per-well/track line hint, for scans without a readable legend: which seeded line is this curve
     # ("thin"/"thick"/"dashed"/"solid"/"left"/"right"). Appearance only, never LAS values.
     line_hint = trace_kw.pop("line_hint", None)
+    spikes = trace_kw.pop("spikes", None)              # model mode with a backup scale: read fast off-scale spikes
     if line_hint:
         check_line_hint(line_hint)
         seed_role = line_hint; seed_curves = True
@@ -288,6 +289,13 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         for a, b, xb in wb:
             v[a:b] = mk(0, width, *backup)(xb)
         checks["model_wraps"] = [(int(a), int(b)) for a, b, _ in wb]
+        if spikes if spikes is not None else True:     # fast spikes off the scale: backup peak, else null
+            sp = at.spike_excursions(cink, np.asarray(T["x"], float), int(T["fy"]), width, wrap_side)
+            to_v = mk(0, width, *backup)
+            for i, f in sp.items():
+                if i < len(v):
+                    v[i] = to_v(np.array([f * (width - 1)]))[0] if np.isfinite(f) else np.nan
+            checks["spikes"] = dict(backup=int(sum(np.isfinite(f) for f in sp.values())), clipped=int(sum(not np.isfinite(f) for f in sp.values())))
     if (clip_null if clip_null is not None else amode == "model"):
         v = clip_to_null(np.asarray(v, float), np.asarray(T["x"], float), width, wr,
                          [(a, b) for a, b, _ in (wb if amode == "model" and backup is not None else [])])

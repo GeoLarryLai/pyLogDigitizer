@@ -147,3 +147,19 @@ def test_line_hint_rejects_unknown():
     with pytest.raises(ValueError, match="line_hint"):
         wf.check_line_hint("NPHI")
     assert wf.check_line_hint("thin") == "thin"
+
+
+def test_spike_excursions_backup_peak_and_clip():
+    H, W, fy = 300, 200, 3
+    ink = _draw(H, W, np.full(H, 60.0), 3)
+    ink[150:153, 60:200] = True                 # fast spike: main runs out to the right edge
+    ink[155:157, 0:120] = True                  # backup re-enters from the left (next rows), peaks at x=119
+    ink[240:243, 60:200] = True                 # second spike, no backup: clipped
+    x = np.full(H // fy, 60.0)
+    sp = at.spike_excursions(ink, x, fy, W, "right")
+    hit = [f for i, f in sp.items() if 48 <= i <= 52]
+    assert hit and all(abs(f * (W - 1) - 119) <= 2 for f in hit if np.isfinite(f))
+    assert any(np.isfinite(f) for f in hit)
+    clip = [f for i, f in sp.items() if 78 <= i <= 82]
+    assert clip and all(np.isnan(f) for f in clip)
+    assert not any(i < 45 or 55 < i < 76 or i > 84 for i in sp)   # nothing on the plain curve

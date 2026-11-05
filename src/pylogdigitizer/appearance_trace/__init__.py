@@ -423,3 +423,35 @@ def wrap_backup(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: float, sid
             continue
         out.append((a, b, xb))
     return out
+
+
+def spike_excursions(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: int, side: str = "right",
+                     edge: int | None = None, min_reach: float = 0.3, base_tol: float = 15.0, pad: int = 1) -> dict:
+    """Fast off-scale spikes drawn as near-horizontal strokes (too quick for the row-wise tracer,
+    which bridges them with a straight connector). At sample i, a curve-ink run that starts within
+    ``base_tol`` px of the trace and runs into the ``side`` edge means the curve left the main scale.
+    If a separate run enters from the opposite edge in the same rows (the backup curve), the spike
+    peak is that run's far end: returns {i: fraction of width on the backup scale}. With no backup
+    run the curve is clipped: {i: nan}. Bands use +-``pad`` samples so short strokes are caught."""
+    H, W = curve_ink.shape; n = len(x)
+    wi = min(int(width), W)
+    edge = int(edge if edge is not None else max(6, round(0.02 * wi)))
+    out = {}
+    for i in range(n):
+        if not np.isfinite(x[i]):
+            continue
+        r0, r1 = max(0, (i - pad) * fy), min(H, (i + 1 + pad) * fy)
+        if r0 >= r1:
+            continue
+        rs = [r_ for rr in curve_ink[r0:r1, :wi] for r_ in _runs(rr)]     # per pixel row: strokes stay apart
+        if side == "right":
+            att = [(a, b) for a, b in rs if b >= wi - edge and a > edge and a <= x[i] + base_tol and b - a >= min_reach * wi]
+            bk = [(a, b) for a, b in rs if a <= edge and b < wi - edge and b - a >= 3]
+            if att:
+                out[i] = (max(b for a, b in bk) - 1) / (wi - 1) if bk else np.nan
+        else:
+            att = [(a, b) for a, b in rs if a <= edge and b < wi - edge and b >= x[i] - base_tol and b - a >= min_reach * wi]
+            bk = [(a, b) for a, b in rs if b >= wi - edge and a > edge and b - a >= 3]
+            if att:
+                out[i] = min(a for a, b in bk) / (wi - 1) if bk else np.nan
+    return out
