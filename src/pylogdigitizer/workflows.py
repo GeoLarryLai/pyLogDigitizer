@@ -181,7 +181,8 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "auto")
     vec = None
     vmode = trace_kw.pop("vector_trace", False)
-    amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True) or on the panel ("panel")
+    amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True), the panel ("panel") or the segmenter's curve ink ("model")
+    seg_model = trace_kw.pop("seg_model", None)
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
         if vmode == "v1":
@@ -210,7 +211,15 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         from pylogdigitizer import grid_layer as gl, appearance_trace as at
         t0 = _t.time()
         GR_ = gl.grid_residual(pan)
-        T = at.apply_appearance(T, pan if amode == "panel" else GR_["residual"])
+        if amode == "model":    # ONNX segmenter: curve ink only; all candidates re-traced jointly (identity)
+            from pylogdigitizer.scan_segmenter import curve_probability
+            if not seg_model:
+                raise ValueError("appearance_trace='model' needs seg_model=<path to .onnx>")
+            cp = curve_probability(pan, seg_model)
+            T = at.apply_identity(T, np.asarray(pan, bool) & (cp > 0.5))
+            checks["seg_curve_frac"] = round(float((cp > 0.5).mean()), 4)
+        else:
+            T = at.apply_appearance(T, pan if amode == "panel" else GR_["residual"])
         checks["appearance_s"] = round(_t.time() - t0, 1); checks["appearance_sideways"] = T.get("appearance_sideways")
         checks["grid_layer"] = dict(v_lines=len(GR_["G"]["vlines"]), v_kind=GR_["G"]["v_kind"],
                                     h_period=GR_["G"]["h_period"], heavy_v=len(GR_["G"]["heavy_v"]))

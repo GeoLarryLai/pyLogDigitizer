@@ -175,3 +175,67 @@ def apply_appearance(T: dict, ink: np.ndarray, **kw) -> dict:
         t["path_padded"] = pp; t["path"] = np.clip(pp - pad, 0, t["cost"].shape[1] - 2 * pad - 1)
         t["appearance_sideways"] = int(r["sideways"][:n][m].sum())
     return T
+
+
+def _retrace(t: dict, ink: np.ndarray, **kw) -> dict:
+    tx = np.asarray(t["x"], float); n = len(tx)
+    off = np.asarray(t["off_left"]) | np.asarray(t["off_right"])
+    pr = tx.copy(); pr[off] = np.nan
+    r = trace_appearance(ink, int(t["fy"]), pr, **kw)
+    nx = tx.copy(); m = ~off
+    nx[m] = r["x"][:n][m]
+    return dict(x=nx, m=m, sideways=r["sideways"][:n], width=r["width"][:n])
+
+
+def _set_x(t: dict, nx: np.ndarray, m: np.ndarray):
+    t["x"] = nx
+    fx, pad = t["fx"], t["pad"]
+    pp = np.asarray(t["path_padded"]).copy()
+    pp[m] = np.clip((nx[m] // fx).astype(int) + pad, pad, t["cost"].shape[1] - pad - 1)
+    t["path_padded"] = pp; t["path"] = np.clip(pp - pad, 0, t["cost"].shape[1] - 2 * pad - 1)
+
+
+def stroke_band(x: np.ndarray, width: np.ndarray, fy: int, shape: tuple, grow: float = 1.0) -> np.ndarray:
+    """Pixels covered by a traced stroke (each sample's ``fy`` rows, +-(width/2 + grow) around x,
+    joined to the next sample so slanted strokes are covered too)."""
+    H, W = shape
+    out = np.zeros((H, W), bool)
+    n = len(x)
+    for i in range(n):
+        if not np.isfinite(x[i]):
+            continue
+        h = float(width[i]) / 2 + grow
+        a = x[i] if i + 1 >= n or not np.isfinite(x[i + 1]) else min(x[i], x[i + 1])
+        b = x[i] if i + 1 >= n or not np.isfinite(x[i + 1]) else max(x[i], x[i + 1])
+        out[i * fy:min(H, (i + 1) * fy), max(0, int(a - h)):min(W, int(np.ceil(b + h)) + 1)] = True
+    return out
+
+
+def apply_identity(T: dict, curve_ink: np.ndarray, cross_px: float | None = None, **kw) -> dict:
+    """Joint identity re-trace of all candidates of a (multi-)curve trace ``T`` (in place) on
+    ``curve_ink`` (e.g. scan ink the segmenter calls curve, grid and text removed). Candidates are
+    traced in order (strongest first); each later candidate does not see the strokes already
+    claimed, except within ``cross_px`` of them (crossings, where both curves share ink), so two
+    curves cannot both follow one stroke and identities do not swap. Each candidate keeps its own
+    appearance (stroke width, dash gaps, heading) from its raster prior; off-track (wrap) samples keep
+    the raster x, so the backup-scale transition is handled by the raster wrap logic."""
+    cands = T.get("candidates") or [T]
+    fy = int(T["fy"]); H, W = curve_ink.shape
+    claimed = np.zeros((H, W), bool); done = []
+    for t in cands:
+        tx = np.asarray(t["x"], float)
+        ink = curve_ink
+        if claimed.any():
+            near = np.zeros((H, W), bool)          # samples where this curve's prior meets a claimed one
+            for d in done:
+                cp = float(cross_px if cross_px is not None else max(4.0, 1.5 * np.nanmedian(d["width"])))
+                close = np.abs(tx - d["x"]) <= cp
+                near |= np.repeat(close, fy)[:H, None] if len(close) * fy >= H else \
+                    np.r_[np.repeat(close, fy), np.zeros(H - len(close) * fy, bool)][:, None]
+            ink = curve_ink & (~claimed | near)
+        r = _retrace(t, ink, **kw)
+        _set_x(t, r["x"], r["m"])
+        t["appearance_sideways"] = int(r["sideways"][r["m"]].sum())
+        done.append(r)
+        claimed |= stroke_band(r["x"], r["width"], fy, (H, W))
+    return T

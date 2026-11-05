@@ -86,3 +86,20 @@ def test_segment_scan_tiles_blend_and_label(tmp_path):
     assert (lab[ink] == 2).all() and (lab[~ink] == 0).all()
     small = label_scan(ink[:40, :50], mp)                # smaller than a tile
     assert small.shape == (40, 50) and (small[ink[:40, :50]] == 2).all()
+
+
+def test_curve_probability_four_class_model(tmp_path):
+    onnx = pytest.importorskip("onnx")
+    from onnx import TensorProto, helper, numpy_helper
+    from pylogdigitizer.scan_segmenter import curve_probability, classes_for
+    W = np.array([-5, 0, 5, 0], np.float32).reshape(4, 1, 1, 1); B = np.array([2.5, 0, 0, 0], np.float32)
+    g = helper.make_graph([helper.make_node("Conv", ["ink", "W", "B"], ["logits"])], "t",
+                          [helper.make_tensor_value_info("ink", TensorProto.FLOAT, [1, 1, None, None])],
+                          [helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, 4, None, None])],
+                          [numpy_helper.from_array(W, "W"), numpy_helper.from_array(B, "B")])
+    m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 17)]); m.ir_version = 8
+    onnx.save(m, str(tmp_path / "m4.onnx"))
+    assert classes_for(4)[2] == "curve"
+    ink = np.random.default_rng(1).random((100, 140)) < 0.3
+    p = curve_probability(ink, str(tmp_path / "m4.onnx"), tile=64, overlap=16)
+    assert p.shape == ink.shape and (p[ink] > 0.9).all() and (p[~ink] < 0.1).all()
