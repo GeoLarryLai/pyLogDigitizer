@@ -183,7 +183,7 @@ def render_tile(rng: np.random.Generator, curves: list[dict], H: int = 512, W: i
 # v-line width 2-5 px (heavy up to 9), h-line width 1.5-6 (heavy up to 10), depth-line spacing
 # 30-48 px, curve stroke 3.5-11 px, speckle 3-6000 / Mpx, pin holes 0-260 / Mpx.
 REAL_RANGES = dict(v_w=(2, 5), v_heavy_add=(1, 4), h_w=(1.5, 6), h_heavy_add=(2, 4), h_sp=(30, 48),
-                   stroke=(3.0, 10.0), speckle=(5, 5000), holes=(0, 250))
+                   stroke=(3.0, 10.0), speckle=(20, 200), speckle_heavy=(1000, 6000), holes=(5, 50))
 
 
 def _strokes(rng, c, H, W, ppf, style, width, scale, track_w, x_off):
@@ -207,7 +207,9 @@ def _strokes(rng, c, H, W, ppf, style, width, scale, track_w, x_off):
     arc = np.r_[0, np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
     dash, gap = (1e9, 0.0) if style == "solid" else ((rng.uniform(12, 30), rng.uniform(6, 14)) if style == "dashed"
                                                        else (rng.uniform(2, 4), rng.uniform(4, 8)))
-    wob = rng.normal(0, 0.35, len(pts))                # pen wobble -> width jitter
+    wl = int(rng.integers(8, 40))                      # pen wobble: slow, correlated width change (+-~25%)
+    wob = np.convolve(rng.normal(0, 1, len(pts) + 2 * wl), np.ones(wl) / np.sqrt(wl), "same")[wl:-wl]
+    wob = wob[:len(pts)] * width * rng.uniform(0.08, 0.25)
     for k in range(len(pts) - 1):
         if abs(pts[k + 1, 0] - pts[k, 0]) > track_w / 2:
             continue
@@ -219,6 +221,11 @@ def _strokes(rng, c, H, W, ppf, style, width, scale, track_w, x_off):
         t = max(1, int(round(width + wob[k])))
         cv2.line(layer, p0, p1, 1.0, t, lineType=cv2.LINE_AA, shift=S)
         cv2.line(dirm, p0, p1, float(np.arctan2(p1[1] - p0[1], p1[0] - p0[0])), max(1, t - 1), lineType=cv2.LINE_8, shift=S)
+    for _ in range(int(rng.poisson(len(pts) / 150))):  # ink blobs where the pen paused / pooled
+        k = int(rng.integers(len(pts)))
+        if 0 <= pts[k, 0] < W:
+            cv2.circle(layer, tuple(np.round(pts[k] * (1 << S)).astype(int)), int(width * rng.uniform(0.6, 1.1) * (1 << S)),
+                       1.0, -1, lineType=cv2.LINE_AA, shift=S)
     return np.clip(layer, 0, 1), dirm
 
 
@@ -252,6 +259,7 @@ def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256,
         dark[int(y):int(y + max(w, 1))] = 1.0
         y += sp; k += 1
     lab[dark > 0.5] = GRID
+    gridm = dark > 0.5
     dirm = np.full((H, W), np.nan, np.float32)
     ppf = sp / rng.choice([2.0, 1.0])                     # depth lines every 2 ft (5") or 1 ft
     meta = dict(track_w=track_w, h_spacing=sp, curves=[])
@@ -279,8 +287,17 @@ def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256,
     g = cv2.GaussianBlur(dark, (0, 0), rng.uniform(0.6, 1.4))
     n = cv2.GaussianBlur(rng.normal(0, 1, (H, W)).astype(np.float32), (0, 0), rng.uniform(0.5, 1.2))
     g = g + n * rng.uniform(0.08, 0.25) / max(n.std(), 1e-6)
+    cm = cv2.dilate(((lab == CURVE_A) | (lab == CURVE_B)).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    e = cv2.GaussianBlur(rng.normal(0, 1, (H, W)).astype(np.float32), (0, 0), rng.uniform(0.8, 1.6))
+    g = g + cm * e * rng.uniform(0.15, 0.35) / max(e.std(), 1e-6)   # rough, textured stroke edges
     ink = g > rng.uniform(0.38, 0.6)
-    nsp = int(np.exp(rng.uniform(*np.log(R["speckle"]))) * H * W / 1e6)
+    ink |= gridm                                       # grid lines stay solid (no break-up)
+    for inv in (False, True):                          # scanner despeckle: drop noise dots / pin holes <= 4 px,
+        z = (~ink if inv else ink).astype(np.uint8)    # then add a controlled, real-range amount back
+        n_, cc, st_, _ = cv2.connectedComponentsWithStats(z, connectivity=8 if not inv else 4)
+        small = np.r_[False, st_[1:, cv2.CC_STAT_AREA] <= 4]
+        ink = (ink | small[cc]) if inv else (ink & ~small[cc])
+    nsp = int(np.exp(rng.uniform(*np.log(R["speckle_heavy" if rng.random() < 0.1 else "speckle"]))) * H * W / 1e6)
     ys, xs_ = rng.integers(0, H, nsp), rng.integers(0, W, nsp); ink[ys, xs_] = True
     nh = int(rng.uniform(*R["holes"]) * H * W / 1e6)
     ys, xs_ = rng.integers(0, H, nh), rng.integers(0, W, nh); ink[ys, xs_] = False
