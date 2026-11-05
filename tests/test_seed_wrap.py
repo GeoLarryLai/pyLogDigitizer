@@ -107,3 +107,16 @@ def test_clip_to_null_edges_but_not_wraps():
     assert np.isnan(out[10:20]).all() and np.isfinite(out[:10]).all()
     assert np.isfinite(out[30:40]).all()                  # wrap span kept (backup carries it)
     assert np.isfinite(out[-2:]).all()                    # short touch kept
+
+
+def test_las_resample_linear_keeps_nulls():
+    from pylogdigitizer.las_export import resample
+    d = np.arange(100.0, 110.0, 1 / 3); v = 2 * d; v[9:15] = np.nan
+    g, o = resample(d, v, 0.25)
+    ok = np.isfinite(o)
+    assert np.allclose(o[ok], 2 * g[ok])              # pure linear, no smoothing
+    assert np.isnan(o[(g > 103.1) & (g < 104.9)]).all()
+    g5, _ = resample(d, v, 0.5); assert np.allclose(np.diff(g5), 0.5)
+    import pytest
+    with pytest.raises(ValueError):
+        resample(d, v, 0.1)

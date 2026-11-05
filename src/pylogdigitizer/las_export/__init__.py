@@ -22,12 +22,30 @@ def curves_summary(path: str | Path) -> dict[str, dict]:
                            "base": float(s.index.max()) if len(s) else None}
     return out
 
-def resample(depth: np.ndarray, values: np.ndarray, step: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
-    """Linearly resample an irregular depth/value trace onto a regular grid."""
+LAS_STEPS = (0.5, 0.25)
+
+
+def resample(depth: np.ndarray, values: np.ndarray, step: float = 0.5, max_gap: float | None = None
+             ) -> tuple[np.ndarray, np.ndarray]:
+    """Resample a traced line onto a regular depth grid (default 0.5 ft, option 0.25 ft) by linear
+    interpolation along the line only: no smoothing or filtering. A grid depth gets NaN (written as
+    the LAS null) when either neighbouring trace sample is NaN (gap / clipped stretch) or the two
+    neighbours are more than ``max_gap`` apart (default 4 steps)."""
+    if not any(abs(step - s_) < 1e-9 for s_ in LAS_STEPS):
+        raise ValueError(f"LAS step must be one of {LAS_STEPS} ft, got {step}")
     order = np.argsort(depth)
-    d, v = np.asarray(depth)[order], np.asarray(values)[order]
+    d, v = np.asarray(depth, float)[order], np.asarray(values, float)[order]
     grid = np.arange(np.ceil(d[0] / step) * step, d[-1] + step / 2, step)
-    return grid, np.interp(grid, d, v)
+    j = np.clip(np.searchsorted(d, grid), 1, len(d) - 1)
+    d0, d1, v0, v1 = d[j - 1], d[j], v[j - 1], v[j]
+    t = np.where(d1 > d0, (grid - d0) / np.where(d1 > d0, d1 - d0, 1), 0.0)
+    out = v0 + t * (v1 - v0)
+    exact = np.isclose(grid, d1)
+    out = np.where(exact, v1, out)
+    mg = 4 * step if max_gap is None else max_gap
+    bad = (~np.isfinite(v0) | ~np.isfinite(v1) | (d1 - d0 > mg)) & ~(exact & np.isfinite(v1))
+    out[bad] = np.nan
+    return grid, out
 
 class LASExportError(ValueError):
     """The data cannot be written as a valid LAS file (message says why, in plain words)."""
