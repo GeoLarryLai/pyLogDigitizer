@@ -44,7 +44,7 @@ Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23
 
 **Scan path (inked TIFF).** Find tracks and grids, deskew the sheet, OCR the depth labels and calibrate scales (including backup-scale wraparound). A small bundled ONNX segmenter separates curve ink from grid and text — default `scan_seg_v2`, with `scan_seg_overflow` opt-in when the print has overflow spikes. Meant as a general scan model; you shouldn’t need to retrain per print. Optional retraining writes to your own folder (`notebooks/03_train_scan_segmenter.ipynb`) and never overwrites the bundled default. Curves are then traced with a fast dynamic-programming tracer (Rust, with a Python fallback).
 
-**Digital-print path (colour PDF).** Read vector paths with `pylogdigitizer.pdf_vector.digitize_pdf`. Auto-identifies the header, upper/lower scale sections and grids per track/column, and digitizes each curve separately. No rasterizing and no scan segmenter — the PDF already has clean coloured strokes. Public examples below include Utah FORGE CBL and a USGS D-522 colour print.
+**Digital-print path (colour PDF).** Read vector paths with `pylogdigitizer.pdf_vector.digitize_pdf`. Auto-identifies the header, upper/lower scale sections and grids per track/column, and digitizes each curve separately. No rasterizing and no scan segmenter — the PDF already has clean coloured strokes. Public examples below include the Utah FORGE 78B-32 CBL colour digital-print.
 
 **Check by eye.** Overlay QA draws identified grid lines and traced curves on the original scan or the real rendered PDF page, so alignment is something you can see, not only a LAS score.
 
@@ -71,13 +71,13 @@ On some multi-curve digital prints a GR piece may be only partly captured (FORGE
 ![Utah FORGE CBL digital-print overlay](image/overlay_pdf_forge_cbl.jpg)
 *Utah FORGE 78B-32 CBL, page 7: digitized curves and the PDF’s own grid lines drawn on the rendered colour page.*
 
-![USGS D-522 original colour print vs extracted curves](image/overlay_pdf_usgs_d522.jpg)
-*USGS D-522: original colour digital-print (left) and the same page with extracted curves drawn back in contrasting colours (right) — gamma, fluid conductivity, temperature, azimuth/tilt.*
+![Utah FORGE CBL original vs extracted grids and curves](image/overlay_pdf_forge_cbl_compare.jpg)
+*Utah FORGE 78B-32 CBL: original colour print (left) and the same page with extracted grids and curves drawn back in contrasting colours (right).*
 
 ![Node editor](image/node_editor.png)
 *Node editor: drop a node (D) that snaps to nearby ink inside an adjustable circle and reconnects the curve instantly, without rerunning the model.*
 
-Scan examples are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOURCES.txt`). Colour digital-print examples are the public Utah FORGE 78B-32 CBL ([GDR / OpenEI](https://gdr.openei.org/)) and a USGS GeoLog Locator print (D-522).
+Scan examples are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOURCES.txt`). Colour digital-print example: the public Utah FORGE 78B-32 CBL ([GDR / OpenEI](https://gdr.openei.org/)).
 
 Notebooks: `notebooks/pdf_vector_demo.ipynb` (digital-print PDF → LAS), `notebooks/03_train_scan_segmenter.ipynb` (optional ONNX retrain into your own folder), plus `notebooks/01_conventional_vs_assisted.ipynb` and `notebooks/02_kansas_ml_train_batch.ipynb` for the scan / cost-map workflow.
 
