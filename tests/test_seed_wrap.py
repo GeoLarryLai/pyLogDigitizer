@@ -163,3 +163,18 @@ def test_spike_excursions_backup_peak_and_clip():
     clip = [f for i, f in sp.items() if 78 <= i <= 82]
     assert clip and all(np.isnan(f) for f in clip)
     assert not any(i < 45 or 55 < i < 76 or i > 84 for i in sp)   # nothing on the plain curve
+
+
+def test_ink_jump_wraps_through_slanted_connector():
+    from pylogdigitizer import scale_wraparound as sw
+    W = 200
+    x = np.r_[np.full(20, 120.0), np.linspace(190, 15, 30), np.full(40, 12.0), np.linspace(15, 185, 30), np.full(20, 130.0)]
+    on = np.ones(len(x), bool); on[20:50] = False; on[90:120] = False      # connectors over empty paper
+    on[20] = True; x[20] = 196.0                                            # exit at the right edge
+    wr, cm = sw.ink_jump_wraps(x, on, W, "right")
+    assert len(wr) == 1 and wr[0][0] == 50 and 89 <= wr[0][1] <= 120
+    assert cm[21:50].all() and cm[91:120].all() and not cm[:20].any() and not cm[50:90].any()
+    # a low curve drawn continuously on ink is not a wrap
+    y = np.r_[np.full(20, 120.0), np.linspace(120, 12, 30), np.full(40, 12.0)]
+    w2, c2 = sw.ink_jump_wraps(y, np.ones(len(y), bool), W, "right")
+    assert w2 == [] and not c2.any()

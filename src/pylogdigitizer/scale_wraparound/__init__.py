@@ -48,6 +48,27 @@ def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge:
     return out
 
 
+def ink_jump_wraps(x: np.ndarray, on_ink: np.ndarray, width: float, wrap_side: str = "right",
+                   edge: float = 0.15, jump: float = 0.4, conn: float = 0.3):
+    """Wraps found on the inked part of a trace only. Where the curve leaves through the wrap edge
+    and the backup re-enters at the opposite edge, a row-wise tracer often draws a slanted
+    connector across empty paper instead of one jump, which hides the jump from
+    ``edge_jump_wraps``. Dropping the off-ink samples restores it.
+    Returns (wraps [a, b) in sample indices, connectors: boolean mask of off-ink samples that bridge
+    more than ``conn`` of the width; these carry no reading and should be null)."""
+    x = np.asarray(x, float); on = np.asarray(on_ink, bool) & np.isfinite(x); n = len(x)
+    idx = np.flatnonzero(on)
+    conn_m = np.zeros(n, bool)
+    if len(idx) < 3:
+        return [], conn_m
+    fw = edge_jump_wraps(x[idx], width, wrap_side, edge=edge, jump=jump)
+    wr = [(int(idx[a]), int(idx[b]) if b < len(idx) else n) for a, b in fw]
+    for p_, q_ in zip(idx[:-1], idx[1:]):
+        if q_ - p_ > 1 and abs(x[q_] - x[p_]) > conn * width:
+            conn_m[p_ + 1:q_] = True
+    return wr, conn_m
+
+
 def edge_extent(rows_ink: np.ndarray, from_left: bool = True, max_gap: int = 30, skip: int = 8) -> np.ndarray:
     """For each row, how far ink connected to the entry edge extends (gaps <= ``max_gap`` px are
     bridged, e.g. between hatch lines). Returns x per row (NaN if no ink near the edge)."""

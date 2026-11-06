@@ -283,12 +283,28 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         checks["grid_layer"] = dict(v_lines=len(GR_["G"]["vlines"]), v_kind=GR_["G"]["v_kind"],
                                     h_period=GR_["G"]["h_period"], heavy_v=len(GR_["G"]["heavy_v"]))
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
+    iw = []
     if amode == "model" and backup is not None:   # explicit wrap transition onto the backup curve
         mk = sc.log_scale if scale_type == "log" else sc.linear_scale
         wb = at.wrap_backup(cink, np.asarray(T["x"], float), int(T["fy"]), width, wrap_side)
         for a, b, xb in wb:
             v[a:b] = mk(0, width, *backup)(xb)
         checks["model_wraps"] = [(int(a), int(b)) for a, b, _ in wb]
+        # overflow wraps the tracer bridged with a connector: re-read on the inked samples only
+        fx = np.asarray(T["x"], float); nfx = len(fx)
+        Bk = at.band_ink(cink, int(T["fy"]), nfx, dilate=1)
+        xi = np.clip(np.nan_to_num(fx).astype(int), 0, Bk.shape[1] - 1)
+        on = np.array([Bk[k, max(0, xi[k] - 3):xi[k] + 4].any() for k in range(nfx)])
+        iw, cm = sw.ink_jump_wraps(fx, on, width, wrap_side)
+        inwb = np.zeros(nfx, bool)
+        for a, b, _ in wb:
+            inwb[a:b] = True
+        bsv = mk(0, width, *backup)(fx)
+        for a, b in iw:
+            seg = np.arange(a, b); seg = seg[~inwb[seg]]
+            v[seg] = bsv[seg]
+        v[cm[:len(v)]] = np.nan
+        checks["ink_wraps"] = [(int(a), int(b)) for a, b in iw]; checks["connector_null"] = int(cm.sum())
         if spikes if spikes is not None else True:     # fast spikes off the scale: backup peak, else null
             sp = at.spike_excursions(cink, np.asarray(T["x"], float), int(T["fy"]), width, wrap_side)
             to_v = mk(0, width, *backup)
@@ -298,7 +314,7 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
             checks["spikes"] = dict(backup=int(sum(np.isfinite(f) for f in sp.values())), clipped=int(sum(not np.isfinite(f) for f in sp.values())))
     if (clip_null if clip_null is not None else amode == "model"):
         v = clip_to_null(np.asarray(v, float), np.asarray(T["x"], float), width, wr,
-                         [(a, b) for a, b, _ in (wb if amode == "model" and backup is not None else [])])
+                         [(a, b) for a, b, _ in (wb if amode == "model" and backup is not None else [])] + list(iw))
         checks["clipped_null"] = int(np.isnan(v).sum())
     checks.update(width=width, rows=(r0, r1), depth_top=round(float(dm(r0)), 1), depth_base=round(float(dm(r1)), 1),
                   label_mode=L.label_mode, n_wraps=len(wr), probe_row=L.probe_row)
