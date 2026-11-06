@@ -191,6 +191,9 @@ def test_guided_fix_routes(app_sid):
     r = c.post(f"/app/api/{sid}/fix/pin", json={"row": 2100, "x": 100, "snap": True}).json()
     assert r["n_anchors"] == n + 1 and r["ms"] >= 0 and r["progress"]["last"]["action"] == "pin"
     r = c.post(f"/app/api/{sid}/fix/move", json={"index": k, "row": 2200, "x": 100}).json(); assert r["n_anchors"] == n + 1
+    r = c.post(f"/app/api/{sid}/fix/node", json={"row": 1000, "x": 100, "radius": 50}).json()
+    assert r["ms"] < 500 and r["undo"][-1] == "node"
+    c.post(f"/app/api/{sid}/undo")
     r = c.post(f"/app/api/{sid}/fix/stroke", json={"points": [[400, 100], [500, 110], [600, 120]]}).json()
     assert r["n_strokes"] == 1
     assert c.post(f"/app/api/{sid}/fix/stroke", json={"points": [[1, 1]]}).status_code == 400

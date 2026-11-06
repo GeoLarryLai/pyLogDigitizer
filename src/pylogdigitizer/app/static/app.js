@@ -38,8 +38,8 @@ function openViewer() {
   viewer = OpenSeadragon({id: "viewer", tileSources: E("/image.dzi"), showNavigationControl: false, prefixUrl: "",
     gestureSettingsMouse: {clickToZoom: false, dblClickToZoom: true}, maxZoomPixelRatio: 4, minZoomImageRatio: 0.3, visibilityRatio: 0.2});
   viewer.addHandler("canvas-click", onClick); viewer.addHandler("canvas-press", onPress); viewer.addHandler("canvas-drag", onDrag); viewer.addHandler("canvas-release", onRelease);
-  new OpenSeadragon.MouseTracker({element: viewer.canvas, moveHandler: e => { if (mode !== "circle") return; const ip = viewer.viewport.viewerElementToImageCoordinates(e.position); HOVER = {row: ip.y, x: ip.x}; drawSoon(); },
-    scrollHandler: e => { if (mode !== "circle" || !e.originalEvent.shiftKey) return; const el = $("circR"); if (!el) return; el.value = Math.max(10, Math.min(600, +el.value * (e.scroll > 0 ? 1.15 : 1 / 1.15))) | 0; e.preventDefault = true; drawSoon(); }}); for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
+  new OpenSeadragon.MouseTracker({element: viewer.canvas, moveHandler: e => { if (mode !== "circle" && mode !== "node") return; const ip = viewer.viewport.viewerElementToImageCoordinates(e.position); HOVER = {row: ip.y, x: ip.x}; drawSoon(); },
+    scrollHandler: e => { if ((mode !== "circle" && mode !== "node") || !e.originalEvent.shiftKey) return; const el = $("circR"); if (!el) return; el.value = Math.max(10, Math.min(600, +el.value * (e.scroll > 0 ? 1.15 : 1 / 1.15))) | 0; e.preventDefault = true; drawSoon(); }}); for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
   return new Promise(r => viewer.addOnceHandler("open", () => { focusStep(); r(); }));
 }
 function fitRows(r0, r1, x0 = 0, x1 = ST.width) {
@@ -63,7 +63,7 @@ function drawWords(c, P) {
     c.strokeStyle = w.corrected ? "#16a34a" : (w.conf < 60 ? "#d97706" : "rgba(37,99,235,.7)"); c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); });
 }
 function drawCircle(c, P) {
-  if (mode !== "circle" || !HOVER) return; const r = +($("circR")?.value || 60), a = P(HOVER.x, HOVER.row), b = P(HOVER.x + r, HOVER.row);
+  if ((mode !== "circle" && mode !== "node") || !HOVER) return; const r = +($("circR")?.value || 60), a = P(HOVER.x, HOVER.row), b = P(HOVER.x + r, HOVER.row);
   c.strokeStyle = "rgba(217,119,6,.9)"; c.lineWidth = 2; c.setLineDash([5, 4]); c.beginPath(); c.arc(a.x, a.y, Math.abs(b.x - a.x), 0, 2 * Math.PI); c.stroke(); c.setLineDash([]);
 }
 function draw() {
@@ -156,13 +156,18 @@ function pinNear(ev) { const ip = imgPt(ev), z = viewer.viewport.viewportToImage
   return (OV?.anchors || []).findIndex(a => Math.hypot(a[1] - ip.x, a[0] - ip.y) < tol); }
 function onPress(ev) {
   if (mode === "guide") { const ip = imgPt(ev); STROKE = [[ip.y, ip.x]]; ev.preventDefaultAction = true; return; }
+  if (mode === "node") { const ip = imgPt(ev); NODE = {row: ip.y, x: ip.x}; viewer.setMouseNavEnabled(false); ev.preventDefaultAction = true; return; }
   if (mode === "fix") { const i = pinNear(ev); if (i >= 0) { const ip = imgPt(ev); DRAG = {i, row: ip.y, x: ip.x, moved: false}; viewer.setMouseNavEnabled(false); } }
 }
 function onDrag(ev) {
   if (mode === "guide" && STROKE.length) { const ip = imgPt(ev); STROKE.push([ip.y, ip.x]); ev.preventDefaultAction = true; drawSoon(); return; }
+  if (mode === "node" && NODE) { const ip = imgPt(ev); NODE = {row: ip.y, x: ip.x}; HOVER = NODE; ev.preventDefaultAction = true; drawSoon(); return; }
   if (DRAG) { const ip = imgPt(ev); DRAG.row = ip.y; DRAG.x = ip.x; DRAG.moved = true; ev.preventDefaultAction = true; drawSoon(); }
 }
+let NODE = null;
 async function onRelease(ev) {
+  if (mode === "node" && NODE) { const n = NODE; NODE = null; viewer.setMouseNavEnabled(true);   // drag end or (force-)click: local ink snap
+    try { await fixCall("/fix/node", {row: n.row, x: n.x, radius: +($("circR")?.value || 60)}); } catch (e) { draw(); } return; }
   if (mode === "guide" && STROKE.length) { const st = STROKE; STROKE = [];
     if (st.length > 2) { try { await fixCall("/fix/stroke", {points: st}); } catch (e) { draw(); } } else draw(); return; }
   if (DRAG) { const d = DRAG; viewer.setMouseNavEnabled(true); DRAG = {t: Date.now()}; if (d.moved) await fixCall("/fix/move", {index: d.i, row: d.row, x: d.x}); else { DRAG = null; } }
@@ -499,7 +504,7 @@ R.trace = () => {
   $("stepLead").textContent = "Click on the real curve wherever the red line is wrong - the line is redrawn through your click.";
   $("stepBody").innerHTML = `<div class="card" id="trInfo"></div>
     <h3>How much did that click change?</h3><div class="card" id="prog7"><span class="note">Each click is a pin: the line must pass through it. Fix the worst places first; when clicks stop changing much, you are done.</span></div>
-    <div class="tools">${tool("fix", "f", "Fix: click the curve")}${tool("guide", "g", "Guide: drag along it")}${tool("circle", "c", "Circle: re-trace inside")}</div>
+    <div class="tools">${tool("fix", "f", "Fix: click the curve")}${tool("guide", "g", "Guide: drag along it")}${tool("circle", "c", "Circle: re-trace inside")}${tool("node", "d", "Node: drag / force-click")}</div>
     <div class="row"><label class="muted">Circle radius (px) <input id="circR" type="number" value="60" min="10" max="600" step="10" style="width:5em"></label> <span class="muted">scroll with Shift to resize</span></div>
     <div class="note" id="toolHint">Fix: click where the line is wrong · drag a green pin to move it · ✕ in the list removes it.<br>Guide (optional): drag a short stroke along a hard stretch; the line follows it there.</div>
     <div class="row"><button id="tNextU" title="Jump to the next place where another path is almost as good (yellow)">Next place to look <span class="kbd">N</span></button><span class="note" id="uPos"></span></div>

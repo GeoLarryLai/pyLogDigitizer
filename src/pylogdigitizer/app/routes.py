@@ -589,6 +589,12 @@ def install(app, root: Path, runner) -> None:
         return guided(e, "circle re-trace", lambda s: s.circle_retrace(float(body["row"]), float(body["x"]),
                                                                       radius_px=float(body.get("radius", 60)), through=bool(body.get("through", False))))
 
+    @app.post("/app/api/{sid}/fix/node")
+    def fix_node(sid: str, body: dict = Body(...)):
+        """{row, x, radius}: manual node (drag or force-click); local ink snap inside the circle, instant."""
+        e = get(sid)
+        return guided(e, "node", lambda s: s.node_snap(float(body["row"]), float(body["x"]), radius_px=float(body.get("radius", 60))))
+
     @app.post("/app/api/{sid}/fix/unstroke")
     def fix_unstroke(sid: str, body: dict = Body(...)):
         e = get(sid)

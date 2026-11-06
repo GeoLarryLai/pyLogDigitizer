@@ -677,13 +677,14 @@ class AssistedSession:
     # ------------------------------------------------------------------ guided fixing
     # Every user edit (pin, move, stroke, answer) goes through _edit: an undo snapshot is kept and the
     # change it made to the trace is logged (progress() turns that into "more clicks still help?").
-    GUIDED_ACTIONS = ("pin", "unpin", "move", "stroke", "unstroke", "answer", "circle")
+    GUIDED_ACTIONS = ("pin", "unpin", "move", "stroke", "unstroke", "answer", "circle", "node")
 
     def _state(self) -> dict:
         return dict(anchors=list(self.anchors), anchor_window_ft=dict(self.anchor_window_ft), excluded=list(self.excluded),
                     excluded_ids=list(self.excluded_ids), strokes=[list(s) for s in self.strokes],
                     decisions=[dict(d) for d in self.decisions], backup_intervals=list(self.backup_intervals),
-                    path=self.T["path_padded"].copy(), n_log=len(self.change_log), circles=list(getattr(self, "circles", [])))
+                    path=self.T["path_padded"].copy(), n_log=len(self.change_log), circles=list(getattr(self, "circles", [])),
+                    nodes=list(getattr(self, "nodes", [])))
 
     def _edit(self, label: str, fn):
         if self.T is None:
@@ -701,7 +702,7 @@ class AssistedSession:
     def _restore(self, snap: dict):
         for k in ("anchors", "anchor_window_ft", "excluded", "excluded_ids", "strokes", "decisions", "backup_intervals"):
             setattr(self, k, snap[k])
-        self.circles = list(snap.get("circles", []))
+        self.circles = list(snap.get("circles", [])); self.nodes = list(snap.get("nodes", []))
         del self.change_log[snap["n_log"]:]
         self._rebuild_cost(); self._set_path(snap["path"]); self._spots = None
 
@@ -780,6 +781,40 @@ class AssistedSession:
             self.last_retrace = dict(dp_rows=(int(a), int(b)), sheet_rows=(float(T["rows"][a]), float(T["rows"][b])))
             return self.last_retrace
         return self._edit("circle", f)
+
+    def node_snap(self, row: float, x: float, radius_px: float = 60.0, panel_x: bool = False, snap_px: float = 12.0):
+        """Manual node edit (drag a node / force-click): the trace goes through (row, x) and, inside the
+        circle of ``radius_px`` around it, follows the ink nearest to the straight lines entry -> node
+        -> exit (entry/exit = the current trace at the circle's top and bottom). No DP and no model
+        re-run: a local ink snap, so it is instant; nothing outside the circle moves. Undoable."""
+        def f():
+            T = self.T; fy, fx = T["fy"], T["fx"]; P = T["path_padded"].copy(); h = len(P)
+            xp = float(x) if panel_x else float(self.sheet_to_panel(row, x))
+            c = min(max(self._dp(row), 0), h - 1); rr = max(1, int(round(radius_px / fy)))
+            a, b = max(0, c - rr), min(h - 1, c + rr)
+            cx = self._dpx(xp)
+            ks = np.arange(a, b + 1)
+            ya = float(P[a]) if a < c else cx; yb = float(P[b]) if b > c else cx
+            guide = np.where(ks <= c, np.interp(ks, [a, c], [ya, cx]), np.interp(ks, [c, b], [cx, yb]))
+            cost = T["cost"]; W = cost.shape[1]; sw = max(1, int(round(snap_px / fx)))
+            for i, k in enumerate(ks):
+                if k == c or (k == a and a < c) or (k == b and b > c):
+                    P[k] = guide[i]; continue
+                dy = (k - c) * fy
+                half = np.sqrt(max(radius_px ** 2 - dy ** 2, 0.0)) / fx
+                lo = int(max(0, guide[i] - min(sw, half))); hi = int(min(W - 1, guide[i] + min(sw, half)))
+                row_c = cost[k, lo:hi + 1]
+                if row_c.size and row_c.min() < np.median(cost[k]):            # ink there: snap to it
+                    cand = np.flatnonzero(row_c <= row_c.min() + 1e-6) + lo
+                    P[k] = float(cand[np.argmin(np.abs(cand - guide[i]))])
+                else:
+                    P[k] = guide[i]
+            P[c] = cx
+            self._set_path(P); self._update_values()
+            self.nodes = getattr(self, "nodes", []) + [(float(row), float(xp), float(radius_px))]
+            self.last_retrace = dict(dp_rows=(int(a), int(b)), sheet_rows=(float(T["rows"][a]), float(T["rows"][b])))
+            return self.last_retrace
+        return self._edit("node", f)
 
     def unpin(self, index: int):
         if not 0 <= index < len(self.anchors):
@@ -1003,7 +1038,8 @@ class AssistedSession:
                     excluded=[list(a) for a in self.excluded], backup_intervals=[list(a) for a in self.backup_intervals],
                     strokes=[[list(p) for p in st] for st in self.strokes], decisions=self.decisions,
                     trace_kw=self.trace_kw, edge_edits=[list(e) for e in getattr(self, "edge_edits", [])],
-                    circles=[list(c) for c in getattr(self, "circles", [])])
+                    circles=[list(c) for c in getattr(self, "circles", [])],
+                    nodes=[list(c) for c in getattr(self, "nodes", [])])
 
     def save_session(self, path) -> Path:
         """Save everything needed to replay this digitization (no image data)."""
@@ -1050,6 +1086,8 @@ class AssistedSession:
         s.auto_trace(anchors_panel=d.get("anchors") or None, excluded=d.get("excluded") or None, strokes=d.get("strokes") or None)
         for r, x, rad, thr in d.get("circles") or []:            # cursor-circle re-traces, in order
             s.circle_retrace(r, x, radius_px=rad, through=thr, panel_x=True)
+        for r, x, rad in d.get("nodes") or []:                   # manual node snaps, in order (after circles)
+            s.node_snap(r, x, radius_px=rad, panel_x=True)
         s.decisions = [dict(x) for x in d.get("decisions", [])]
         return s
 

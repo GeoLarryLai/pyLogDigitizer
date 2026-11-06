@@ -144,3 +144,25 @@ def test_cursor_circle_only_changes_rows_inside(project):
     f = os.path.join(tempfile.mkdtemp(), "s.json"); open(f, "w").write(json.dumps(s.session_dict(), default=str))
     s2 = AssistedSession.from_session_file(f)
     assert np.allclose(s2.T["x"], x1, equal_nan=True)                       # replayed from the session file
+
+
+def test_node_snap_is_local_instant_and_snaps_to_ink(project):
+    import time, json, os, tempfile
+    s = _session(project); x0 = s.T["x"].copy(); rows = np.asarray(s.T["rows"], float)
+    r = _wrong_row(s); rad = 80.0
+    t = time.perf_counter()
+    out = s.node_snap(r, float(xa(r)) + 3.0, radius_px=rad)       # dropped a few px off the ink
+    assert time.perf_counter() - t < 0.5                          # no DP / model re-run
+    lo, hi = out["sheet_rows"]
+    outside = (rows < lo) | (rows > hi)
+    assert np.array_equal(s.T["x"][outside], x0[outside])          # reconnects; nothing outside moves
+    near = np.abs(rows - r) <= 3 * s.T["fy"]                          # at the node: on the wanted curve's ink
+    assert np.median(np.abs(s.T["x"][near] - xa(rows[near]))) < 8
+    inside = (rows > lo) & (rows < hi)                                 # one node = straight reconnect to the
+    k = np.flatnonzero(inside)                                         # trace above/below: monotone legs, no jumps
+    assert np.abs(np.diff(s.T["x"][k])).max() < rad
+    assert s.undo() == "node" and np.array_equal(s.T["x"], x0) and s.nodes == []
+    s.node_snap(r, float(xa(r)), radius_px=rad); x1 = s.T["x"].copy()
+    from pylogdigitizer.assisted_tracing import AssistedSession
+    f = os.path.join(tempfile.mkdtemp(), "s.json"); open(f, "w").write(json.dumps(s.session_dict(), default=str))
+    assert np.allclose(AssistedSession.from_session_file(f).T["x"], x1, equal_nan=True)
