@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "pylogdigitizer"
 version = "0.2.0"
-description = "Semi-automatic and ML-assisted digitization of raster scans of petrophysical well logs"
+description = "Digitize scanned paper well logs and digital-print PDF logs into LAS files"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
