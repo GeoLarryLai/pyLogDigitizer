@@ -19,3 +19,7 @@ outputs/
 .venv/
 ocr_corrections/
 !src/pylogdigitizer/segmentation/curve_seg.onnx
+
+artifacts/
+example_data/pdf_vector/
+.venv/

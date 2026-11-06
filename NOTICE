@@ -31,3 +31,6 @@ Network use (AGPL-3.0 section 13): if you modify pyLogDigitizer and let other pe
 interact with it over a network (for example by serving the FastAPI web editor to
 remote users), you must offer those users the Corresponding Source of your modified
 version. Running the editor locally for yourself creates no such obligation.
+
+- pypdf (BSD; PDF vector path/text extraction for pdf_vector) is a runtime dependency
+  installed separately and remains under its own license.
