@@ -71,8 +71,8 @@ On some multi-curve digital prints a GR piece may be only partly captured (FORGE
 ![Utah FORGE CBL digital-print overlay](image/overlay_pdf_forge_cbl.jpg)
 *Utah FORGE 78B-32 CBL, page 7: digitized curves and the PDF’s own grid lines drawn on the rendered colour page.*
 
-![USGS Matterhorn colour print and digitized fluid curves](image/overlay_pdf_usgs_matterhorn.jpg)
-*USGS Ro-699 (Matterhorn): colour digital-print page (left) and digitized fluid temperature / conductivity curves vs depth (right), checked against the paired USGS LAS.*
+![USGS Matterhorn curves extracted from colour digital-print](image/overlay_pdf_usgs_matterhorn.jpg)
+*USGS Ro-699 (Matterhorn): curves extracted from the colour digital-print and drawn back on the rendered page (fluid conductivity and temperature).*
 
 ![Node editor](image/node_editor.png)
 *Node editor: drop a node (D) that snaps to nearby ink inside an adjustable circle and reconnects the curve instantly, without rerunning the model.*
