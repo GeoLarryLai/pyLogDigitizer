@@ -25,3 +25,5 @@ example_data/pdf_vector/
 .venv/
 !src/pylogdigitizer/scan_segmenter/models/
 !src/pylogdigitizer/scan_segmenter/models/*.onnx
+
+progress.md
