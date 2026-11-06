@@ -72,7 +72,7 @@ On some multi-curve digital prints a GR piece may be only partly captured (FORGE
 *Utah FORGE 78B-32 CBL, page 7: digitized curves and the PDF’s own grid lines drawn on the rendered colour page.*
 
 ![Utah FORGE CBL original vs extracted grids and curves](image/overlay_pdf_forge_cbl_compare.jpg)
-*Utah FORGE 78B-32 CBL: original colour print (left) and the same page with extracted grids and curves drawn back in contrasting colours (right).*
+*Utah FORGE 78B-32 CBL: original colour print (left) → extracted grids and curves drawn back in contrasting colours (right).*
 
 ![Node editor](image/node_editor.png)
 *Node editor: drop a node (D) that snaps to nearby ink inside an adjustable circle and reconnects the curve instantly, without rerunning the model.*
