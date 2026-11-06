@@ -193,3 +193,11 @@ def test_ink_jump_wraps_infers_unseen_exit_from_continuity():
     # same shape without the edge approach (curve stays mid-track before the gap): no wrap
     y = x.copy(); y[:40] = np.linspace(80, 110, 40)
     assert sw.ink_jump_wraps(y, on, W, "right")[0] == []
+
+
+def test_ink_jump_wraps_rejects_landing_that_moves_into_track():
+    from pylogdigitizer import scale_wraparound as sw
+    W = 400
+    x = np.r_[np.linspace(200, 390, 40), np.full(30, 300.0), np.full(3, 20.0), np.linspace(120, 250, 120)]
+    on = np.ones(len(x), bool); on[40:70] = False
+    assert sw.ink_jump_wraps(x, on, W, "right")[0] == []

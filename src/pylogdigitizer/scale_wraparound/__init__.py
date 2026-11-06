@@ -54,6 +54,12 @@ def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge:
     return out
 
 
+def xr_seq(x, width, wrap_side):
+    """Position as a fraction of the width measured from the entry (non-wrap) edge."""
+    x = np.asarray(x, float) / float(width)
+    return x if wrap_side == "right" else 1.0 - x
+
+
 def ink_jump_wraps(x: np.ndarray, on_ink: np.ndarray, width: float, wrap_side: str = "right",
                    edge: float = 0.15, jump: float = 0.4, conn: float = 0.3, border: float = 4.0,
                    min_run: int = 5, gap: int = 10, look: int = 30):
@@ -81,7 +87,7 @@ def ink_jump_wraps(x: np.ndarray, on_ink: np.ndarray, width: float, wrap_side: s
     for k, i in enumerate(idx):
         if k and i - idx[k - 1] >= gap:
             prev = xr[idx[max(0, k - look):k]]; nxt = xr[idx[k:k + look]]
-            if prev.max() > 1 - edge and nxt.min() < edge:
+            if prev.max() > 1 - edge and nxt.min() < edge and np.median(nxt) < edge:   # backup hugs the entry edge first
                 e_hi = width - 1.0 if wrap_side == "right" else 0.0
                 seq_x += [e_hi, width - 1.0 - e_hi]; seq_i += [i, i]
         seq_x.append(x[i]); seq_i.append(i)
@@ -90,6 +96,9 @@ def ink_jump_wraps(x: np.ndarray, on_ink: np.ndarray, width: float, wrap_side: s
     # the backup may swing far into the track (high values); only reaching the wrap edge zone itself
     # without a jump (impossible for a backup) cancels the wrap
     fw = edge_jump_wraps(seq_x, width, wrap_side, edge=edge, jump=jump, cancel_at=1 - edge, cancel_closes=True)
+    # a backup enters at the edge and stays near it for a while (it starts just above the backup
+    # scale's low end); a landing that moves straight back into the track is a mis-trace, not a wrap
+    fw = [(a, b) for a, b in fw if np.median(np.r_[xr_seq(seq_x[a:a + look], width, wrap_side)]) < edge]
     wr = [(int(seq_i[a]), int(seq_i[b]) if b < len(seq_i) else n) for a, b in fw]
     wr = [(a, b) for a, b in wr if b > a]
     for p_, q_ in zip(idx[:-1], idx[1:]):
