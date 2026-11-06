@@ -203,3 +203,41 @@ def test_overlay_pdf_page_draws_curve_paths(tmp_path):
     assert (tmp_path / "ov.png").stat().st_size > 1000
     labels = [l.get_label() for l in fig.axes[0].get_lines() if not l.get_label().startswith("_")]
     assert sorted(labels) == sorted(t.mnemonic for t in log.traces)
+
+
+def test_overlay_on_rendered_page_grid_residual(tmp_path):
+    """Grid vector paths land on the printed lines of a rendering (here: our own exact raster of the
+    grid at 72 dpi), all tracks; curve paths are drawn in page pixels."""
+    pytest.importorskip("cv2")
+    from pypdf import PdfReader
+    from pylogdigitizer.pdf_vector import digitize_pdf
+    from pylogdigitizer.pdf_vector.extract import extract_page
+    from pylogdigitizer.pdf_vector.overlay import overlay_pdf_render, _grid_paths
+    log = digitize_pdf(FIXTURE, pages=[0])
+    pv = extract_page(PdfReader(str(FIXTURE)), 0)
+    dpi = 144; f = dpi / 72; Hp, Wp = int(round(pv.height * f)), int(round(pv.width * f))
+    img = np.full((Hp, Wp, 3), 255, np.uint8)
+    gh, gv = _grid_paths(pv.strokes)
+    assert gh and gv
+    for s in gh + gv:                                    # "render": 2-px lines centred on the path
+        P = np.c_[s.pts[:, 0] * f - 0.5, (pv.height - s.pts[:, 1]) * f - 0.5]
+        x0, x1 = sorted(P[:, 0][[0, -1]]); y0, y1 = sorted(P[:, 1][[0, -1]])
+        img[int(round(y0 - 0.5)):int(round(y1 + 0.5)) + 1, int(round(x0 - 0.5)):int(round(x1 + 0.5)) + 1] = 0
+    out, res = overlay_pdf_render(FIXTURE, log, 0, img, dpi, tmp_path / "r.png")
+    assert (tmp_path / "r.png").exists() and out.shape[1] == Wp
+    vals = [v["h"]["median"] for v in res.values() if v["h"]]
+    assert vals and max(vals) <= 0.5
+
+
+def test_legendless_header_does_not_steal_coloured_curve_pieces():
+    """FORGE porosity: a green GR split into pieces by on-curve labels; a header without a legend
+    style (STIT) used to take the leftover green pieces. Taken styles are now reserved."""
+    from pylogdigitizer.pdf_vector.assemble import _best_chain_for_header, _style_key
+    from pylogdigitizer.pdf_vector.calibrate import CurveHeader, TrackFrame
+    from pylogdigitizer.pdf_vector.extract import Stroke
+    y = np.linspace(100, 300, 60)
+    piece = Stroke(pts=np.c_[50 + 10 * np.sin(y / 9), y], color=(0.0, 0.75, 0.0), width=3.0)
+    stit = CurveHeader("STIT", 0, 50, "ft", "linear", x=170.0)
+    fr = TrackFrame(0.0, 180.0)
+    assert _best_chain_for_header(stit, fr, [piece], set()) is piece                  # old behaviour
+    assert _best_chain_for_header(stit, fr, [piece], set(), taken_styles={_style_key(piece)}) is None

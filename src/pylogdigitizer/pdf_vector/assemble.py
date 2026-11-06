@@ -429,6 +429,7 @@ def _best_chain_for_header(
     curves: list[Stroke],
     claimed: set[int],
     label_x: float | None = None,
+    taken_styles: set | None = None,
 ) -> Stroke | None:
     """Pick the longest unclaimed body stroke in this track matching header style.
 
@@ -443,6 +444,8 @@ def _best_chain_for_header(
         x_med = float(np.median(s.pts[:, 0]))
         if not (fr.x_left - 5 <= x_med <= fr.x_right + 5):
             continue
+        if h.color is None and taken_styles and _style_key(s) in taken_styles:
+            continue   # a legend-less header must not take another curve's (coloured) pieces
         white = is_near_white(s.color)
         if white:
             # White wrap/backup is used on log resistivity tracks (e.g. AT20).
@@ -495,6 +498,45 @@ def _best_chain_for_header(
         return None
     candidates.sort(key=lambda t: -t[0])
     return candidates[0][1]
+
+
+def _style_key(s: Stroke) -> tuple:
+    return (tuple(np.round(np.asarray(s.color, float), 2)), round(float(s.width), 1), tuple(s.dash))
+
+
+def _same_style_pieces(chain: Stroke, h: CurveHeader, fr: TrackFrame, curves: list[Stroke],
+                       claimed: set[int], label_x: float | None, max_pieces: int = 50,
+                       max_gap: float = 50.0, max_dx: float = 30.0) -> list[Stroke]:
+    """The picked stroke plus every other unclaimed stroke of exactly the same style in the same
+    track whose depth (y) span does not overlap the pieces already taken: a curve the plotter broke
+    into pieces (labels, page panels) is one curve. Pieces are only taken for styled headers."""
+    if h.color is None:
+        return [chain]
+    out = [chain]; seen = set(claimed) | {id(chain)}
+    span = lambda q: (float(q.pts[:, 1].min()), float(q.pts[:, 1].max()))
+    for _ in range(max_pieces):
+        nxt = _best_chain_for_header(h, fr, curves, seen, label_x=label_x)
+        if nxt is None:
+            break
+        seen.add(id(nxt))
+        same = (tuple(np.round(nxt.color, 3)) == tuple(np.round(chain.color, 3)) and abs(nxt.width - chain.width) < 0.1
+                and tuple(nxt.dash) == tuple(chain.dash))
+        a, b = span(nxt)
+        edge = min(abs(float(nxt.pts[:, 0].min()) - fr.x_left), abs(float(nxt.pts[:, 0].max()) - fr.x_right)) < 2.0
+        if same and not edge and len(nxt.pts) >= 3 and all(b <= span(q)[0] + 2 or a >= span(q)[1] - 2 for q in out) \
+                and _joins(out, nxt, max_gap, max_dx):
+            out.append(nxt)
+    return out
+
+
+def _joins(pieces: list[Stroke], q: Stroke, max_gap: float, max_dx: float) -> bool:
+    """``q`` continues the assembled curve: one of its ends is within ``max_gap`` (y) and
+    ``max_dx`` (x) of the top or bottom end of the pieces taken so far."""
+    P = np.concatenate([p.pts for p in pieces])
+    top, bot = P[np.argmax(P[:, 1])], P[np.argmin(P[:, 1])]
+    qt, qb = q.pts[np.argmax(q.pts[:, 1])], q.pts[np.argmin(q.pts[:, 1])]
+    ok = lambda u, v: 0 <= u[1] - v[1] <= max_gap and abs(u[0] - v[0]) <= max_dx
+    return ok(bot, qt) or ok(qb, top)
 
 
 def _apply_explicit_styles(
@@ -729,6 +771,7 @@ def traces_from_page(
 
     skip = {"TIME_1900", "VDL", "MAIN", "REPEAT"}
     claimed: set[int] = set()
+    taken_styles: set = set()
     out: list[CurveTrace] = []
     ordered = sorted(
         headers,
@@ -747,10 +790,21 @@ def traces_from_page(
                     break
             else:
                 fr = TrackFrame(x_left=max(0.0, label_x - 90), x_right=min(page.width, label_x + 90))
-        chain = _best_chain_for_header(h, fr, curves, claimed, label_x=label_x)
+        chain = _best_chain_for_header(h, fr, curves, claimed, label_x=label_x, taken_styles=taken_styles)
         if chain is None:
             continue
         claimed.add(id(chain))
+        if h.color is not None and not is_near_black(chain.color):
+            taken_styles.add(_style_key(chain))
+        wrap_ids = {id(w) for w in find_off_chart_wrap_strokes(chain, curves, claimed, fr, h)}   # wraps stay wraps
+        # pieces of a curve split by labels; not on wrapping curves (their edge pieces are wraps)
+        pieces = _same_style_pieces(chain, h, fr, curves, claimed | wrap_ids, label_x)
+        if len(pieces) > 1:          # one curve split into several strokes (e.g. by on-curve labels)
+            for q in pieces:
+                claimed.add(id(q))
+            top_down = lambda q: q.pts if q.pts[0, 1] >= q.pts[-1, 1] else q.pts[::-1]
+            pts = np.concatenate([top_down(q) for q in sorted(pieces, key=lambda q: -float(q.pts[:, 1].max()))])
+            chain = Stroke(pts=pts, color=chain.color, width=chain.width, dash=chain.dash)
         scale = ScaleMap(fr.x_left, fr.x_right, h.v_left, h.v_right, h.kind)
         wrap_meta = detect_wrap_jumps(chain.pts, scale) if h.kind == "log" else {
             "n_wraps": 0, "wrap_indices": [], "has_off_chart_wrap": False,
