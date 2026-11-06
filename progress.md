@@ -74,3 +74,20 @@
 - Minzer root cause: from about 3200 to 3800 ft the main curve is off-scale on the right and only the backup stroke near the left edge is inked. The wrap entry is not detected there, so the backup is read on the main scale (15-30 where KGS reads 120-140).
 - Not done: segmenter retrain with synthetic overflow spikes.
 - Figures: /workspace/pld_viz_out/easy_ink3/.
+
+## Overflow segmenter + continuity wraps (2026-11-05)
+- synth_scan.render_scan_tile(overflow=p): adds near-flat fast spikes running to a track edge, backup strokes re-entering from the opposite edge, and long backup-only stretches near an edge. All are labelled curve and cross the grid.
+  - 4-class model retrained on Larry's Mac (MPS, 3000 steps, 284 s); weights copied back and exported to ONNX on the box.
+  - Model: /workspace/pld_bench/overflow_seg/seg_unet.onnx. Synthetic val IoU: paper .980, grid .957, curve .770, text .729.
+- ink_jump_wraps additions:
+  - Border-hugging samples and isolated specks are ignored.
+  - Continuity rule: the curve reaches the wrap edge zone, vanishes for at least 10 samples, and comes back near the opposite edge. This counts as an exit even when no exit was drawn.
+  - A cancelled wrap is kept up to its last entry-edge sample instead of being dropped.
+  - A wrap is accepted only if the backup stays near the entry edge after landing; this removed a false Hall wrap.
+- USA_A_16 runtime: 487 s -> 134 s (vectorised on-ink check; spike scan prefiltered to bands touching the edge).
+- r_reg, easy_ink3 -> easy_ink4 (new model plus rules): Chitwood 0.993 -> 0.989, Swanson 0.736 -> 0.803, USA_A_16 0.737 -> 0.797, Hall 0.630 -> 0.630, GOHEEN 0.617 -> 0.595, ELY 0.508 -> 0.421, Minzer 0.200 -> 0.494.
+- Minzer:
+  - Over 3250-3780 ft the backup values match KGS within about 5 (for example 116 vs 116, 118 vs 118). The CPS label on the print uses the same numbers as the LAS API curve, so no unit conversion is applied; we have not confirmed whether CPS here is just a label.
+  - The 300-700 ft overflow is real: KGS median there is 115, above the 110 main-scale maximum.
+- ELY: a false wrap opens at 4458 ft to the end of the log. A low GR curve near the left edge looks like a backup, so the rule cannot tell them apart. Part of the ELY drop probably comes from the new model; it was not isolated.
+- Figures: /workspace/pld_viz_out/easy_ink4/.
