@@ -112,3 +112,32 @@
 - `qc_overlay.overlay_scan` (raster) and `pdf_vector.overlay.overlay_pdf_page` (dev/0.2-pdf): track edges, grid lines and traces over the scan / page vectors.
 - Manual node editor (`AssistedSession.node_snap`, `POST /fix/node`, UI tool D): drop/drag a node, local ink snap inside the circle, reconnects above/below, ~2 ms, undo/session round trip. Demo: `scripts/demo_node_editor.py`.
 - Suite: 265 passed, 2 skipped, 1 xfailed.
+
+## Overlay QA on the original page + grid snapping (2026-11-05, evening)
+- `qc_overlay.overlay_scan(scan_path, R, track, ...)` now draws on the ORIGINAL scan (full sheet, all tracks):
+  panel (grid-rectified, `R["grid_lattice"]`) -> strip -> sheet with the exact inverse of `deskew_blocks`
+  (verified: 100% of strip ink lands on sheet ink). Curves are drawn at their printed ink (wrapped/overflow
+  segments where the ink is); optional side panel with the unwrapped values; legend + title band.
+- Grid per track, per 3000-row chunk: vertical lines followed block by block (grid_rectify seed tracking +
+  thin/contrast column test), horizontal lines per 24 px segment; every line then snapped sub-pixel to the
+  printed line on the sheet (60-row / 24-px windows, median smoothed). Residual |line - ink centre| (px):
+
+| scan / track | V unsnapped med/p95 | V snapped med/p95 | H unsnapped med/p95 | H snapped med/p95 |
+|---|---|---|---|---|
+| Swanson track1 | 0.21/1.35 | 0.13/0.72 | 0.39/2.0 | 0.07/1.62 |
+| Swanson track2 | 0.20/1.17 | 0.14/0.78 | 0.50/2.0 | 0.12/1.63 |
+| Chitwood track1 | 0.24/1.50 | 0.10/0.57 | 0.50/1.5 | 0.10/0.88 |
+| Chitwood track2 | 0.21/1.37 | 0.11/0.71 | 0.50/2.5 | 0.13/1.25 |
+| Minzer track1 | 0.36/2.59 | 0.15/0.97 | 0.50/2.58 | 0.16/1.06 |
+| Minzer track2 | 0.24/1.33 | 0.13/0.50 | 0.84/3.67 | 0.14/0.61 |
+
+  Max values (~4-5 px) are windows where curve/text ink sits on the line (measurement window edge).
+- PDF (dev/0.2-pdf): `overlay_pdf_render` draws on a real rendering (pdftoppm, figure only) every neutral
+  straight vector path (grey grid included), track frames and each curve's source path. Vector grid vs
+  rendered line: median 0.0-0.4 px, p95 <= 1.5 px at 150 dpi.
+- PDF fix: a header without legend style (FORGE STIT) no longer takes pieces styled like another curve
+  (it was labelling the green GR pieces as STIT). FORGE e2e scores unchanged (GR 0.984/0.945, CBL 0.995).
+- Known: FORGE porosity p9 GR is still only one piece per page (curve split by labels; joining pieces that
+  touch the track edge broke CBL's wrap handling, so edge-touching pieces are not joined), and the picked
+  piece is not visible in the render (likely clipped in the PDF) - the real-page overlay shows it.
+- Figures: /workspace/pld_viz_out/overlay_qa2/ (full + zoom each, residual JSONs).

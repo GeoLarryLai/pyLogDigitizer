@@ -302,7 +302,8 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         except Exception as e:                       # header check is advisory only
             checks["header_depths_error"] = str(e)
     return dict(depth=dm(T["rows"]), value=v, conf=T["conf"], layout=L, depth_map=dm, anchors=anc,
-                residuals=res, checks=checks, trace=T, wraps=wr, panel_rows=(r0, r1), panel=pan, vector=vec)
+                residuals=res, checks=checks, trace=T, wraps=wr, panel_rows=(r0, r1), panel=pan, vector=vec,
+                grid_lattice=lat if grid_rectify else None)
 
 
 class SectionChoiceNeeded(CalibrationError):
