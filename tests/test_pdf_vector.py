@@ -190,3 +190,16 @@ def test_glued_scale_unit_and_thin_black_curve():
     thin = Stroke(pts=np.column_stack([xs, ys]), color=(0.0, 0.0, 0.0), width=0.3)
     _gh, _gv, curves = classify_strokes([thin])
     assert len(curves) == 1
+
+
+def test_overlay_pdf_page_draws_curve_paths(tmp_path):
+    from pylogdigitizer.pdf_vector import digitize_pdf
+    from pylogdigitizer.pdf_vector.overlay import overlay_pdf_page
+    log = digitize_pdf(FIXTURE, pages=[0])
+    assert log.traces and all(t.info.get("page_paths") for t in log.traces)
+    for t in log.traces:                            # source path spans the trace's depth extent
+        assert sum(len(p) for _, p in t.info["page_paths"]) >= 2
+    fig = overlay_pdf_page(FIXTURE, log, 0, tmp_path / "ov.png")
+    assert (tmp_path / "ov.png").stat().st_size > 1000
+    labels = [l.get_label() for l in fig.axes[0].get_lines() if not l.get_label().startswith("_")]
+    assert sorted(labels) == sorted(t.mnemonic for t in log.traces)

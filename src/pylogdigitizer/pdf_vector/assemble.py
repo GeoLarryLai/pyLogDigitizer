@@ -656,6 +656,7 @@ def traces_from_page_horizontal(
                 unit=h.unit, kind=h.kind, page_index=page.page_index,
                 info={"n_pts": int(len(depth)), "width": chain.width, "dash": chain.dash,
                       "track": (y0, y1), "layout": "horizontal",
+                      "page_paths": [(page.page_index, np.asarray(chain.pts, np.float32))],
                       "v_left": h.v_left, "v_right": h.v_right},
             ))
         # Leftover strokes in band with no header: still emit as anonymous curves.
@@ -795,6 +796,8 @@ def traces_from_page(
             "n_wraps": int(wrap_meta.get("n_wraps", 0)),
             "n_wrap_pts": int(n_wrap_pts),
             "wrap_segments": wrap_segments,
+            "page_paths": [(page.page_index, np.asarray(chain.pts, np.float32))]
+                          + [(page.page_index, np.asarray(ws.pts, np.float32)) for ws in wrap_strokes],
         }
         if info["off_chart_wrap"]:
             info["off_chart_wrap_note"] = OFF_CHART_WRAP_NOTE
@@ -839,7 +842,8 @@ def stitch_traces(traces: list[CurveTrace]) -> list[CurveTrace]:
                 "off_chart_wrap": wrap_any,
                 "n_wraps": int(sum(int(g.info.get("n_wraps", 0)) for g in group)),
                 "n_wrap_pts": int(sum(int(g.info.get("n_wrap_pts", 0)) for g in group)),
-                "wrap_segments": wrap_segs}
+                "wrap_segments": wrap_segs,
+                "page_paths": [pp for g in group for pp in (g.info.get("page_paths") or [])]}
         if wrap_any:
             info["off_chart_wrap_note"] = OFF_CHART_WRAP_NOTE
         # Keep track from first page that has one.
