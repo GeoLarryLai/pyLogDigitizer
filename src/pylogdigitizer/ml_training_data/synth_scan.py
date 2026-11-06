@@ -186,6 +186,42 @@ REAL_RANGES = dict(v_w=(2, 5), v_heavy_add=(1, 4), h_w=(1.5, 6), h_heavy_add=(2,
                    stroke=(3.0, 10.0), speckle=(20, 200), speckle_heavy=(1000, 6000), holes=(5, 50))
 
 
+def _overflow_spikes(rng, lab, dark, dirm, H, W, meta):
+    """Off-scale excursions as drawn on wrapped prints, labelled curve (never grid): a near-flat fast
+    stroke from the curve out to one track edge, the backup stroke re-entering from the opposite edge
+    to a peak and back, and sometimes a long stretch where only the backup is inked near that edge.
+    They cross the grid lines on purpose (that is where 1-bit scans make them look like grid)."""
+    import cv2
+    ys, xs = np.nonzero(lab == CURVE_A)
+    if not len(ys):
+        return
+    w = rng.uniform(1.5, 4.0)
+    for _ in range(int(rng.integers(1, 4))):
+        k = int(rng.integers(len(ys))); y0, x0 = int(ys[k]), int(xs[k])
+        right = rng.random() < 0.7
+        dy = int(rng.integers(1, 14))
+        m = np.zeros((H, W), np.uint8)
+        xe = W + 2 if right else -3
+        cv2.line(m, (x0, y0), (xe, y0 + dy), 1, max(1, int(round(w))), cv2.LINE_AA)
+        if rng.random() < 0.8:                              # backup re-enters from the opposite edge
+            xs_ = -3 if right else W + 2
+            pk = int(rng.uniform(0.1, 0.95) * W); pk = pk if right else W - pk
+            y1 = y0 + dy + int(rng.integers(0, 4)); y2 = y1 + int(rng.integers(2, 14))
+            cv2.line(m, (xs_, y1), (pk, y1 + (y2 - y1) // 2), 1, max(1, int(round(w))), cv2.LINE_AA)
+            cv2.line(m, (pk, y1 + (y2 - y1) // 2), (xs_, y2), 1, max(1, int(round(w))), cv2.LINE_AA)
+        on = m > 0
+        lab[on] = CURVE_A; dark[on] = 1.0
+    if rng.random() < 0.3:                                   # long overflow: only the backup near the edge
+        y0 = int(rng.integers(0, H // 2)); y1 = int(rng.integers(y0 + H // 4, H))
+        yy = np.arange(y0, y1); right = rng.random() < 0.5
+        bx = np.clip(np.cumsum(rng.normal(0, 1.2, len(yy))) + rng.uniform(4, 0.15 * W), 1, 0.3 * W)
+        bx = bx if right else W - 1 - bx
+        m = np.zeros((H, W), np.uint8)
+        cv2.polylines(m, [np.c_[bx, yy].astype(np.int32)], False, 1, max(1, int(round(w))))
+        on = m > 0; lab[on] = CURVE_A; dark[on] = 1.0
+    meta["overflow"] = True
+
+
 def _strokes(rng, c, H, W, ppf, style, width, scale, track_w, x_off):
     """Pen stroke of one curve as a float mask (anti-aliased) plus direction; wraps re-enter."""
     import cv2
@@ -229,7 +265,7 @@ def _strokes(rng, c, H, W, ppf, style, width, scale, track_w, x_off):
     return np.clip(layer, 0, 1), dirm
 
 
-def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256, W: int = 256) -> dict:
+def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256, W: int = 256, overflow: float = 0.0) -> dict:
     """Scan-like 1-bit tile: solid grid at measured widths, thick jagged pen strokes, 1-2 curves in
     legend styles crossing each other and the grid, wraps, text/stamps, then blur + correlated noise +
     threshold like a binarising scanner, speckle and pin holes. Returns dict(image uint8 0/255,
@@ -273,6 +309,8 @@ def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256,
         lab[on] = CURVE_A + k; dirm[on] = d[on]
         dark = np.maximum(dark, m)
         meta["curves"].append(dict(name=c["name"], style=st, width=round(float(w), 1)))
+    if overflow and rng.random() < overflow:
+        _overflow_spikes(rng, lab, dark, dirm, H, W, meta)
     tm = np.zeros((H, W), np.uint8)
     for _ in range(int(rng.poisson(0.7))):
         txt = "".join(rng.choice(list("0123456789ABCDEFGHIJKLMNOPRSTUVW .-"), int(rng.integers(2, 7))))

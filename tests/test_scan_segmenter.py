@@ -103,3 +103,22 @@ def test_curve_probability_four_class_model(tmp_path):
     ink = np.random.default_rng(1).random((100, 140)) < 0.3
     p = curve_probability(ink, str(tmp_path / "m4.onnx"), tile=64, overlap=16)
     assert p.shape == ink.shape and (p[ink] > 0.9).all() and (p[~ink] < 0.1).all()
+
+
+def test_synth_overflow_spikes_are_curve_labelled_across_grid():
+    from pylogdigitizer.ml_training_data import synth_scan as ss
+    rng = np.random.default_rng(3)
+    y = np.linspace(0, 1, 400)
+    C = [dict(name="GR", depth=np.arange(400) * 0.5, value=60 + 40 * np.sin(y * 20))]
+    n_ok = 0
+    for s in range(30):
+        t = ss.render_scan_tile(np.random.default_rng(s), C, 256, 256, overflow=1.0)
+        if not t["meta"].get("overflow"):
+            continue
+        lab = t["label"]
+        # curve labels reach a tile edge column (the excursion runs out to the edge)
+        if ((lab[:, :4] == ss.CURVE_A).any() or (lab[:, -4:] == ss.CURVE_A).any()):
+            n_ok += 1
+    assert n_ok >= 10
+    t0 = ss.render_scan_tile(np.random.default_rng(5), C, 256, 256)
+    assert not t0["meta"].get("overflow")

@@ -437,7 +437,9 @@ def spike_excursions(curve_ink: np.ndarray, x: np.ndarray, fy: int, width: int, 
     wi = min(int(width), W)
     edge = int(edge if edge is not None else max(6, round(0.02 * wi)))
     out = {}
-    for i in range(n):
+    ez = curve_ink[:, wi - edge:wi].any(1) if side == "right" else curve_ink[:, :edge + 1].any(1)
+    Be = band_ink(ez[:, None], fy, n, dilate=pad)[:, 0]          # only bands touching the wrap edge can spike
+    for i in np.flatnonzero(Be[:n]):
         if not np.isfinite(x[i]):
             continue
         r0, r1 = max(0, (i - pad) * fy), min(H, (i + 1 + pad) * fy)

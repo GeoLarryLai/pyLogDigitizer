@@ -294,7 +294,10 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
         fx = np.asarray(T["x"], float); nfx = len(fx)
         Bk = at.band_ink(cink, int(T["fy"]), nfx, dilate=1)
         xi = np.clip(np.nan_to_num(fx).astype(int), 0, Bk.shape[1] - 1)
-        on = np.array([Bk[k, max(0, xi[k] - 3):xi[k] + 4].any() for k in range(nfx)])
+        Cs = np.c_[np.zeros(len(Bk), np.int32), np.cumsum(Bk, axis=1, dtype=np.int32)]
+        kk = np.arange(min(nfx, len(Bk)))
+        on = np.zeros(nfx, bool)
+        on[kk] = (Cs[kk, np.minimum(xi[kk] + 4, Bk.shape[1])] - Cs[kk, np.maximum(xi[kk] - 3, 0)]) > 0
         iw, cm = sw.ink_jump_wraps(fx, on, width, wrap_side)
         inwb = np.zeros(nfx, bool)
         for a, b, _ in wb:
