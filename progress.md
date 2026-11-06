@@ -91,3 +91,24 @@
   - The 300-700 ft overflow is real: KGS median there is 115, above the 110 main-scale maximum.
 - ELY: a false wrap opens at 4458 ft to the end of the log. A low GR curve near the left edge looks like a backup, so the rule cannot tell them apart. Part of the ELY drop probably comes from the new model; it was not isolated.
 - Figures: /workspace/pld_viz_out/easy_ink4/.
+
+## Cleanup, bundled segmenter, overlay QA, manual node editor (2026-11-05)
+- Removed abandoned paths: 5-class curve-id segmenter (curve_class_probability, class_role/seed_role), style/appearance tuning (apply_appearance, class_inks), grid-residual modes and the `grid_layer` module + their tests. `appearance_trace` is now "model" or off.
+- Bundled models (1.5 MB each) in `src/pylogdigitizer/models/`: `scan_seg_v2.onnx` (default) and `scan_seg_overflow.onnx` (opt-in, `default_model("overflow")`).
+- Default kept on the old model because it holds Chitwood at 0.993; overflow model is better on average:
+
+| scan | default (v2) | overflow |
+|---|---|---|
+| Chitwood_12 | 0.993 | 0.989 |
+| Swanson_1 | 0.736 | 0.803 |
+| USA_A_16 | 0.793 | 0.797 |
+| Hall_D_4 | 0.630 | 0.630 |
+| GOHEEN_UNIT_1 | 0.617 | 0.595 |
+| ELY_1 | 0.367 | 0.421 |
+| Minzer_1 | 0.492 | 0.494 |
+| mean | 0.661 | 0.676 |
+
+- `scripts/train_scan_segmenter.py` + `notebooks/03_train_scan_segmenter.ipynb`: write to a user dir; refuse to overwrite the bundled model unless `overwrite_default=True`.
+- `qc_overlay.overlay_scan` (raster) and `pdf_vector.overlay.overlay_pdf_page` (dev/0.2-pdf): track edges, grid lines and traces over the scan / page vectors.
+- Manual node editor (`AssistedSession.node_snap`, `POST /fix/node`, UI tool D): drop/drag a node, local ink snap inside the circle, reconnects above/below, ~2 ms, undo/session round trip. Demo: `scripts/demo_node_editor.py`.
+- Suite: 265 passed, 2 skipped, 1 xfailed.
