@@ -16,9 +16,12 @@ from pylogdigitizer.pdf_vector import (
 from pylogdigitizer.pdf_vector.extract import extract_page
 from pylogdigitizer.pdf_vector.assemble import traces_from_page, is_near_white, classify_strokes
 from pylogdigitizer.pdf_vector.digitize import _collect_headers
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
-PDF = Path("/workspace/pld_vector_pdf/forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Induction_30Jul21_070636.Pdf")
-VIZ = Path("/workspace/pld_viz_out/digital_print_wrap")
+PDF = DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Induction_30Jul21_070636.Pdf"
+VIZ = OUT_ROOT / "digital_print_wrap"
 OUT = Path("artifacts/pdf_vector")
 VIZ.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""E2E: CBL + TD induction → LAS; figures → /workspace/pld_viz_out/pdf_vector3/."""
+"""E2E: CBL + TD induction → LAS; figures → $PLD_OUT/pdf_vector3/."""
 from __future__ import annotations
 
 import json
@@ -13,11 +13,14 @@ import lasio
 from pylogdigitizer.pdf_vector import digitize_pdf
 from pylogdigitizer.las_export import read_las, verify_las
 from pylogdigitizer.qc_compare import qc_plot
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
-VIZ = Path("/workspace/pld_viz_out/pdf_vector3")
+VIZ = OUT_ROOT / "pdf_vector3"
 VIZ.mkdir(parents=True, exist_ok=True)
-DATA = Path("/workspace/pld_vector_pdf")
-OUT = Path("/workspace/pld_pdf/artifacts/pdf_vector")
+DATA = DATA_ROOT
+OUT = OUT_ROOT / "artifacts/pdf_vector"
 OUT.mkdir(parents=True, exist_ok=True)
 
 

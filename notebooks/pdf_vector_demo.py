@@ -1,5 +1,5 @@
 # %% digital_print demo — colour PDF → regions → LAS (pypdf; not ink scans)
-# Figs: /workspace/pld_viz_out/digital_print_demo/
+# Figs: $PLD_OUT/digital_print_demo/
 # Run: PYTHONPATH=src python notebooks/pdf_vector_demo.py
 from __future__ import annotations
 
@@ -22,10 +22,13 @@ from pylogdigitizer.pdf_vector.assemble import traces_from_page
 from pylogdigitizer.las_export import read_las, verify_las
 from pylogdigitizer.qc_compare import metrics, to_grid
 from pypdf import PdfReader
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
 DATA = Path("example_data/pdf_vector")
 DATA.mkdir(parents=True, exist_ok=True)
-VIZ = Path("/workspace/pld_viz_out/digital_print_demo")
+VIZ = OUT_ROOT / "digital_print_demo"
 VIZ.mkdir(parents=True, exist_ok=True)
 
 CBL_URL = "https://gdr.openei.org/files/1330/78B-32_CBL_LOG.zip"

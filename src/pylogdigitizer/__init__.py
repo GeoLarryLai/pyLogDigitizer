@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """pyLogDigitizer: semi-automatic digitization of raster well-log scans."""
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 
 def _openmp_guard() -> None:

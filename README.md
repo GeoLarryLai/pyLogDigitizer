@@ -10,7 +10,7 @@
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
 
-**pyLogDigitizer** turns scanned paper well logs (TIFF) into LAS files. Lots of older wells only exist as paper scans, and digitizing them by hand is slow and hard to check. So I built a tool that does the tedious parts (finding tracks and grids, reading depth labels, tracing curves) and gives you a local browser app to check and fix every step. Curves that run off the track and come back on a backup scale get unwrapped automatically. Everything runs on your own machine and nothing is uploaded.
+**pyLogDigitizer** turns scanned paper well logs (TIFF) and digital-print (vector) PDF logs into LAS files. Lots of older wells only exist as paper scans, and digitizing them by hand is slow and hard to check. So I built a tool that does the tedious parts (finding tracks and grids, reading depth labels, tracing curves) and gives you a local browser app to check and fix every step. Curves that run off the track and come back on a backup scale get unwrapped automatically. Everything runs on your own machine and nothing is uploaded.
 
 ## Installation
 
@@ -39,7 +39,10 @@ Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23
 
 - Find tracks and grids, deskew the scan, read depth labels (OCR) and calibrate scales, including backup-scale wraparound
 - Trace curves with a fast dynamic-programming tracer (Rust, with a Python fallback)
-- Fix a trace in the app: click the real curve to pin it, drag a pin, or re-trace just the part inside a cursor circle
+- Separate curve ink from grid and text with a small bundled ONNX segmenter (`scan_seg_v2`, default; `scan_seg_overflow` opt-in), or train your own with `notebooks/03_train_scan_segmenter.ipynb` (writes to your own folder, never over the bundled model)
+- Read digital-print PDF logs straight from their vector paths (`pylogdigitizer.pdf_vector.digitize_pdf`), no rasterizing
+- Overlay QA images: grid, track edges and traced curves drawn on the original scan or page
+- Fix a trace in the app: click the real curve to pin it, drag a pin, re-trace just the part inside a cursor circle, or drop a node (D) that snaps to the ink and reconnects instantly
 - Nudge track edges, set a scale from two grid lines, and click any OCR word in the header to correct it (the scale is re-fitted)
 - Optionally train a U-Net cost map on your own corrected traces; batch runs send low-confidence curves to review
 - Compare results against a reference LAS and write LAS 2.0

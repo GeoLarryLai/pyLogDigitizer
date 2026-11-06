@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """FORGE CBL digital-print layout demo: regions + annotated figures + LAS JSON.
 
-Figures → /workspace/pld_viz_out/digital_print_forge_layout/
+Figures → $PLD_OUT/digital_print_forge_layout/
 Uses existing CBL digitize path; confirms DigitizedLog.layouts; writes regions
 JSON next to the LAS under artifacts/pdf_vector/.
 """
@@ -22,9 +22,12 @@ from pylogdigitizer.pdf_vector import (
 from pylogdigitizer.pdf_vector.extract import extract_page
 from pylogdigitizer.pdf_vector.assemble import traces_from_page
 from pylogdigitizer.las_export import verify_las
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
-PDF = Path("/workspace/pld_vector_pdf/UniversityofUtah_Forge78B-32_6Oct21_CBL.Pdf")
-VIZ = Path("/workspace/pld_viz_out/digital_print_forge_layout")
+PDF = DATA_ROOT / "UniversityofUtah_Forge78B-32_6Oct21_CBL.Pdf"
+VIZ = OUT_ROOT / "digital_print_forge_layout"
 OUT = Path("artifacts/pdf_vector")
 VIZ.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)

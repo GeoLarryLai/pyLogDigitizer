@@ -3,7 +3,7 @@
 """E2E: USGS GeoLog Locator digital-print PDF → regions + LAS + scores.
 
 Matterhorn Ro-699 (usgs_21.pdf + Matterhorn_7-10.las). Figures under
-/workspace/pld_viz_out/digital_print_usgs/.
+$PLD_OUT/digital_print_usgs/.
 """
 from __future__ import annotations
 
@@ -19,11 +19,14 @@ from pylogdigitizer.pdf_vector import (
 )
 from pylogdigitizer.las_export import verify_las, read_las
 from pylogdigitizer.qc_compare import metrics, to_grid
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
-USGS = Path("/workspace/pld_vector_pdf/usgs")
+USGS = DATA_ROOT / "usgs"
 PDF = USGS / "usgs_21.pdf"
 LAS = USGS / "Matterhorn_7-10.las"
-VIZ = Path("/workspace/pld_viz_out/digital_print_usgs")
+VIZ = OUT_ROOT / "digital_print_usgs"
 OUT = Path("artifacts/pdf_vector")
 VIZ.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)

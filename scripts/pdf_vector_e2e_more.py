@@ -15,46 +15,49 @@ from pylogdigitizer.pdf_vector.extract import extract_page
 from pylogdigitizer.pdf_vector.digitize import _log_pages
 from pylogdigitizer.las_export import verify_las
 from pylogdigitizer.qc_compare import metrics, to_grid
+import os
+DATA_ROOT = Path(os.environ.get("PLD_DATA", "data"))   # example PDFs / LAS
+OUT_ROOT = Path(os.environ.get("PLD_OUT", "pld_out"))   # figures / outputs
 
-VIZ = Path("/workspace/pld_viz_out/digital_print_more")
+VIZ = OUT_ROOT / "digital_print_more"
 OUT = Path("artifacts/pdf_vector")
 VIZ.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
 
-MAIN = Path("/workspace/pld_vector_pdf/other/UOU_FORGE-78B-32_R1B_TD_SECTION_ConPr_R06_L004Up___QAIT_QSLT_QCNT_QTGC_MAIN-GenericV12.las")
+MAIN = DATA_ROOT / "other/UOU_FORGE-78B-32_R1B_TD_SECTION_ConPr_R06_L004Up___QAIT_QSLT_QCNT_QTGC_MAIN-GenericV12.las"
 
 WELLS = [
     {
         "id": "forge_porosity",
-        "pdf": Path("/workspace/pld_vector_pdf/forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Porosity_30Jul21_070820.Pdf"),
+        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Porosity_30Jul21_070820.Pdf",
         "las": MAIN,
         "alias": {"ECGR_STGC": "GR_STGC", "NPOR": "NPOR", "NPHI": "NPHI", "TNPH": "TNPH",
                   "SPHI": "SPHI", "TENS": "TENS"},
     },
     {
         "id": "forge_sslt",
-        "pdf": Path("/workspace/pld_vector_pdf/forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_sslt_30Jul21_070718.Pdf"),
+        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_sslt_30Jul21_070718.Pdf",
         "las": MAIN,
         "alias": {"ECGR_STGC": "GR_STGC", "GR_STGC": "GR_STGC", "DT": "DT", "DTCO": "DTCO",
                   "ITT": "ITT", "SP": "SP", "TENS": "TENS", "SPHI": "DT"},  # SPHI us/ft misname→DT family
     },
     {
         "id": "forge_temperature",
-        "pdf": Path("/workspace/pld_vector_pdf/forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Temperature_Log_30Jul21_070532.Pdf"),
+        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Temperature_Log_30Jul21_070532.Pdf",
         "las": MAIN,
         "alias": {"ECGR_STGC": "GR_STGC", "GR_STGC": "GR_STGC", "MTEM": "GTEM", "CTEM": "CTEM",
                   "GTEM": "GTEM"},
     },
     {
         "id": "usgs_18",
-        "pdf": Path("/workspace/pld_vector_pdf/usgs/usgs_18.pdf"),
-        "las": Path("/workspace/pld_vector_pdf/usgs/usgs_18.las"),
+        "pdf": DATA_ROOT / "usgs/usgs_18.pdf",
+        "las": DATA_ROOT / "usgs/usgs_18.las",
         "alias": {"GAM": "GAM(", "GAMMA": "GAM(", "CALIPER": "CALI", "TEMP": "TEMP:1",
                   "FL": "SP_C:1"},
     },
     {
         "id": "usgs_caville",
-        "pdf": Path("/workspace/pld_vector_pdf/usgs/usgs_100.pdf"),
+        "pdf": DATA_ROOT / "usgs/usgs_100.pdf",
         "las": None,  # LAS 99 not downloadable (403)
         "alias": {},
     },
