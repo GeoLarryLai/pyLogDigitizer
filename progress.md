@@ -67,3 +67,10 @@
   - Minzer: the trace misses the backup curve near the left edge and bridges spikes. Around 3200-3800 ft it reads about 15 where KGS reads about 120 (to check: section/scale or the backup).
   - Earlier: Chitwood_12 0.993.
 - Figures: /workspace/pld_viz_out/easy_ink2/.
+
+## Overflow wraps across connectors (2026-11-05)
+- New sw.ink_jump_wraps: wrap detection uses only the inked trace samples. A row-wise tracer draws a slanted connector across empty paper instead of jumping, which hid the wrap. Connector samples that cross more than 30% of the width are written as null.
+- r_reg before -> after: Chitwood 0.993 -> 0.993, ELY 0.530 -> 0.508, GOHEEN 0.617 -> 0.617, Hall 0.630 -> 0.630, Minzer 0.080 -> 0.200, Swanson 0.736 -> 0.736, USA_A_16 0.735 -> 0.737.
+- Minzer root cause: from about 3200 to 3800 ft the main curve is off-scale on the right and only the backup stroke near the left edge is inked. The wrap entry is not detected there, so the backup is read on the main scale (15-30 where KGS reads 120-140).
+- Not done: segmenter retrain with synthetic overflow spikes.
+- Figures: /workspace/pld_viz_out/easy_ink3/.
