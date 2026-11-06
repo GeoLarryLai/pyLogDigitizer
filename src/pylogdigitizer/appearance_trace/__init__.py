@@ -7,14 +7,15 @@ and back-strokes of near-flat spikes, cheap per pixel). Turning costs a curvatur
 reversal L<->R (spike tip, zig-zag) is the dearest. The emission does not reward the darkest ink: it
 rewards ink whose stroke width matches the target curve's width, learnt from the prior trace and
 then per block from the first pass ("trace so far"); a dashed target gets a cheaper miss. Input is
-normally the residual of :mod:`pylogdigitizer.grid_layer` (grid explained away). KGS scans are 1-bit,
+the curve ink of the scan segmenter (:mod:`pylogdigitizer.scan_segmenter`). KGS scans are 1-bit,
 so there is no grey level to match; width and dash pattern carry the appearance.
 """
 from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["band_ink", "width_map", "trace_appearance", "apply_appearance"]
+__all__ = ["band_ink", "width_map", "trace_appearance", "apply_identity", "seeded_multi_trace",
+           "wrap_backup", "spike_excursions"]
 
 L_, V_, R_ = 0, 1, 2
 # curvature penalty between headings (L: moving left down the log, V: straight, R: right). A reversal
@@ -156,27 +157,6 @@ def trace_appearance(ink: np.ndarray, fy: int, prior: np.ndarray | None = None, 
     return dict(x=x.astype(float), sideways=side, width=w_t, gap_frac=1 - miss)
 
 
-def apply_appearance(T: dict, ink: np.ndarray, **kw) -> dict:
-    """Re-trace the picked curve of a raster trace ``T`` (in place) with :func:`trace_appearance`, its x
-    as the prior; samples where the raster trace is off-track (wrap) keep the raster x and flags."""
-    cands = [T]
-    fy = int(T["fy"])
-    for t in cands:
-        tx = np.asarray(t["x"], float); n = len(tx)
-        off = np.asarray(t["off_left"]) | np.asarray(t["off_right"])
-        pr = tx.copy(); pr[off] = np.nan
-        r = trace_appearance(ink, fy, pr, **kw)
-        nx = tx.copy(); m = ~off
-        nx[m] = r["x"][:n][m]
-        t["x"] = nx
-        fx, pad = t["fx"], t["pad"]
-        pp = np.asarray(t["path_padded"]).copy()
-        pp[m] = np.clip((nx[m] // fx).astype(int) + pad, pad, t["cost"].shape[1] - pad - 1)
-        t["path_padded"] = pp; t["path"] = np.clip(pp - pad, 0, t["cost"].shape[1] - 2 * pad - 1)
-        t["appearance_sideways"] = int(r["sideways"][:n][m].sum())
-    return T
-
-
 def _retrace(t: dict, ink: np.ndarray, **kw) -> dict:
     tx = np.asarray(t["x"], float); n = len(tx)
     off = np.asarray(t["off_left"]) | np.asarray(t["off_right"])
@@ -279,34 +259,23 @@ def _rows_mask(m: np.ndarray, fy: int, H: int) -> np.ndarray:
 
 def seeded_multi_trace(curve_ink: np.ndarray, fy: int, n: int = 2, seed_len: int = 6,
                        cross_px: float | None = None, cross_len: int = 15, collapse_px: float = 6.0,
-                       collapse_len: int = 40, class_inks: list | None = None, **kw):
+                       collapse_len: int = 40, **kw):
     """Trace ``n`` curves on curve ink from independent seeds (not from another tracer's picks).
     Curves are traced widest first. A later curve may use ink already claimed by an earlier one only
     inside short windows (<= ``cross_len`` samples) where its own first pass comes within
     ``cross_px`` of that curve (a true crossing); longer shared stretches are excluded. Where a later
     curve still collapses onto an earlier one (within ``collapse_px`` for >= ``collapse_len``
     samples) or loses ink that long, it is re-seeded from free ink at the start of that stretch and
-    re-traced there. With ``class_inks`` (one ink mask per curve class from the identity segmenter)
-    each curve is seeded and traced on its own class ink, in the given order. Returns a list of dict(x, width, gap_frac, seed_x, seed_sample, reseeds)."""
+    re-traced there. Returns a list of dict(x, width, gap_frac, seed_x, seed_sample, reseeds)."""
     H, W = curve_ink.shape
     ns = -(-H // fy)
-    if class_inks is not None:        # per-curve ink from a curve-identity segmenter: one seed per class
-        n = len(class_inks); seeds = []
-        for ci in class_inks:
-            sd1 = find_seeds(ci, fy, 1, window=ns)
-            if sd1 is None:
-                return []
-            seeds.append((sd1[0], sd1[1][0]))
-    else:
-        sd = find_seeds(curve_ink, fy, n)
-        if sd is None:
-            return []
-        seeds = [(sd[0], p_) for p_ in sd[1]]
+    sd = find_seeds(curve_ink, fy, n)
+    if sd is None:
+        return []
+    seeds = [(sd[0], p_) for p_ in sd[1]]
     claimed = np.zeros((H, W), bool); out = []
-    for k_, (s, (x0, w0)) in enumerate(seeds):
-        if class_inks is not None:
-            curve_ink = class_inks[k_]
-        B = band_ink(curve_ink, fy, ns, dilate=1)
+    B = band_ink(curve_ink, fy, ns, dilate=1)
+    for s, (x0, w0) in seeds:
         pr = np.full(ns, np.nan); pr[s:s + seed_len] = x0
         reseeds = 0
         if not out:

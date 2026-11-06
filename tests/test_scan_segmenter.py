@@ -66,18 +66,18 @@ def test_scan_stats_on_known_grid():
 def _tiny_model(path):
     onnx = pytest.importorskip("onnx")
     from onnx import TensorProto, helper, numpy_helper
-    # 1x1 conv: ink -> class 2 (curveA) logit high, paper logit high where no ink
-    W = np.array([-5, 0, 5, 0, 0], np.float32).reshape(5, 1, 1, 1); B = np.array([2.5, 0, 0, 0, 0], np.float32)
+    # 1x1 conv: ink -> class 2 (curve) logit high, paper logit high where no ink
+    W = np.array([-5, 0, 5, 0], np.float32).reshape(4, 1, 1, 1); B = np.array([2.5, 0, 0, 0], np.float32)
     g = helper.make_graph([helper.make_node("Conv", ["ink", "W", "B"], ["logits"])], "t",
                           [helper.make_tensor_value_info("ink", TensorProto.FLOAT, [1, 1, None, None])],
-                          [helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, 5, None, None])],
+                          [helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, 4, None, None])],
                           [numpy_helper.from_array(W, "W"), numpy_helper.from_array(B, "B")])
     m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 17)]); m.ir_version = 8
     onnx.save(m, str(path)); return str(path)
 
 
 def test_segment_scan_tiles_blend_and_label(tmp_path):
-    from pylogdigitizer.scan_segmenter import CLASSES, label_scan, segment_scan
+    from pylogdigitizer.scan_segmenter import CLASSES4 as CLASSES, label_scan, segment_scan
     mp = _tiny_model(tmp_path / "t.onnx")
     rng = np.random.default_rng(0); ink = rng.random((300, 517)) < 0.3
     p = segment_scan(ink, mp, tile=128, overlap=32)
@@ -122,3 +122,24 @@ def test_synth_overflow_spikes_are_curve_labelled_across_grid():
     assert n_ok >= 10
     t0 = ss.render_scan_tile(np.random.default_rng(5), C, 256, 256)
     assert not t0["meta"].get("overflow")
+
+
+def test_bundled_default_models_load_and_are_small():
+    from pylogdigitizer import scan_segmenter as sg
+    import os
+    for name in ("default", "overflow"):
+        p = sg.default_model(name)
+        assert os.path.getsize(p) < 10e6
+        ink = np.zeros((256, 256), bool); ink[:, 120:124] = True
+        cp = sg.curve_probability(ink, p)
+        assert cp.shape == ink.shape and np.isfinite(cp).all()
+
+
+def test_training_refuses_to_overwrite_bundled_default(tmp_path):
+    import sys, pathlib, pytest
+    torch = pytest.importorskip("torch")
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+    import train_scan_segmenter as tss
+    from pylogdigitizer import scan_segmenter as sg
+    with pytest.raises(ValueError, match="overwrite_default"):
+        tss.train("nothing/*.las", str(sg.MODEL_DIR), steps=1)

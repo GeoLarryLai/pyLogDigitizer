@@ -2,52 +2,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from pylogdigitizer import grid_layer as gl, appearance_trace as at
+from pylogdigitizer import appearance_trace as at
 from pylogdigitizer.ml_training_data import synth_scan as ss
-
-
-def _grid_panel(H=900, W=300, curve=True):
-    ink = np.zeros((H, W), bool)
-    for x in range(0, W, 30):
-        ink[:, x:x + 2] = True
-    ink[:, 150:155] = True                       # heavy line
-    for y in range(10, H, 30):
-        ink[y:y + 2] = True
-    xc = None
-    if curve:
-        yy = np.arange(H); xc = (100 + 60 * np.sin(yy / 90)).astype(int)
-        for r in range(H):
-            ink[r, xc[r] - 2:xc[r] + 2] = True
-    return ink, xc
-
-
-def test_run_lengths():
-    a = np.array([[1, 1, 0, 1], [0, 1, 1, 1]], bool)
-    assert gl.run_lengths(a, 1).tolist() == [[2, 2, 0, 1], [0, 3, 3, 3]]
-    assert gl.run_lengths(a, 0).tolist() == [[1, 2, 0, 2], [0, 2, 1, 2]]
-
-
-def test_fit_grid_lattice_and_heavy_line():
-    ink, _ = _grid_panel(curve=False)
-    G = gl.fit_grid(ink, block=300)
-    cs = sorted(v["center"] for v in G["vlines"])
-    assert len(cs) == 10 and G["v_kind"] in ("linear", "irregular")
-    assert abs(G["h_period"] - 30) < 1
-    heavy = [G["vlines"][i]["center"] for i in G["heavy_v"]]
-    assert heavy and all(abs(h - 152) < 4 for h in heavy)
-
-
-def test_residual_keeps_curve_drops_grid():
-    ink, xc = _grid_panel()
-    R = gl.grid_residual(ink, block=300)
-    res = R["residual"]
-    rows = np.arange(len(xc))
-    v, _ = _grid_panel(curve=False); v[:, 98:102] = True             # vertical curve crossing every grid row
-    assert gl.grid_residual(v, block=300)["residual"][:, 99].all()
-    # known gap: slanted strokes crossing a grid row / riding a grid column lose some pixels
-    assert res[rows, xc].mean() > 0.75
-    far = np.ones_like(ink); far[np.abs(np.arange(ink.shape[1])[None, :] - xc[:, None]) < 4] = False
-    assert (res & far).sum() < 0.01 * (ink & far).sum()   # grid explained away
 
 
 def test_appearance_tracer_follows_prior_curve_not_thicker_line():

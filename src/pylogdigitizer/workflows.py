@@ -191,19 +191,19 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     nc = int(trace_kw.pop("n_curves", 1)); pick = trace_kw.pop("pick", "auto")
     vec = None
     vmode = trace_kw.pop("vector_trace", False)
-    amode = trace_kw.pop("appearance_trace", False)     # idea C on idea A's residual (True), the panel ("panel") or the segmenter's curve ink ("model")
+    # "model": re-trace on the ONNX segmenter's curve ink (bundled default model unless seg_model=...)
+    amode = trace_kw.pop("appearance_trace", False)
+    if amode not in (False, None, "model"):
+        raise ValueError("appearance_trace must be 'model' (or off)")
     seg_model = trace_kw.pop("seg_model", None)
-    seed_curves = trace_kw.pop("seed_curves", False)
-    seed_role = trace_kw.pop("seed_role", None)
-    # per-well/track line hint, for scans without a readable legend: which seeded line is this curve
+    seed_curves = trace_kw.pop("seed_curves", False)   # independent seeds for multi-curve tracks
+    # per-well/track line hint for scans without a readable legend: which seeded line is this curve
     # ("thin"/"thick"/"dashed"/"solid"/"left"/"right"). Appearance only, never LAS values.
     line_hint = trace_kw.pop("line_hint", None)
-    spikes = trace_kw.pop("spikes", None)              # model mode with a backup scale: read fast off-scale spikes
     if line_hint:
-        check_line_hint(line_hint)
-        seed_role = line_hint; seed_curves = True
-    class_role = trace_kw.pop("class_role", None)      # identity model: "A" (heavier/solid) or "B" (lighter/patterned) is this curve        # line style of the wanted curve when no legend: dashed/solid/thick/thin
-    clip_null = trace_kw.pop("clip_null", None)        # null where the curve is clipped at the track edge (default: on with "model")    # with "model": independent seeds for multi-curve tracks
+        check_line_hint(line_hint); seed_curves = True
+    spikes = trace_kw.pop("spikes", None)              # model mode with a backup scale: read fast off-scale spikes
+    clip_null = trace_kw.pop("clip_null", None)        # null where the curve is clipped at the track edge (default: on with "model")
     if vmode:   # vectorize first, drop grid vectors, trace curve vectors only
         from pylogdigitizer import vectorize as vz
         if vmode == "v1":
@@ -227,61 +227,32 @@ def digitize_curve(path, track: str, scale: tuple[float, float], first_depth: fl
     if vec is not None and vmode not in ("v1", "v2_nochain"):
         T = vz.apply_chains(T, vec, pan.shape, n_curves=nc)
         checks["vector_fallback_rows"] = int(T.get("vector_fallback", 0))
-    if amode:
+    if amode == "model":   # ONNX segmenter: curve ink only; candidates re-traced on it
         import time as _t
-        from pylogdigitizer import grid_layer as gl, appearance_trace as at
+        from pylogdigitizer import appearance_trace as at
+        from pylogdigitizer.scan_segmenter import curve_probability, default_model
         t0 = _t.time()
-        GR_ = gl.grid_residual(pan)
-        if amode == "model":    # ONNX segmenter: curve ink only; all candidates re-traced jointly (identity)
-            from pylogdigitizer.scan_segmenter import curve_probability
-            if not seg_model:
-                raise ValueError("appearance_trace='model' needs seg_model=<path to .onnx>")
-            cp = curve_probability(pan, seg_model)
-            cink = np.asarray(pan, bool) & (cp > 0.5)
-            cands = T.get("candidates") or [T]
-            seeded = []
-            if class_role and len(cands) == 2:     # curve-identity segmenter: seed + trace each class on its own ink
-                from pylogdigitizer.scan_segmenter import curve_class_probability
-                pab = curve_class_probability(pan, seg_model)
-                if pab is None:
-                    raise ValueError("class_role needs a curve-identity seg_model (curveA/curveB outputs)")
-                ia = cink & (pab[0] >= pab[1]); ib = cink & (pab[1] > pab[0])
-                want, other = (ib, ia) if class_role == "B" else (ia, ib)
-                seeded = at.seeded_multi_trace(cink, int(T["fy"]), 2, class_inks=[want, other])
-                if len(seeded) == 2:
-                    pi = cands.index(T) if T in cands else 0
-                    seeded = [seeded[1], seeded[0]] if pi == 1 else seeded
-                    checks["class_frac"] = [round(float(ia.mean()), 4), round(float(ib.mean()), 4)]
-            elif len(cands) > 1 and seed_curves:
-                seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands))
-            if len(seeded) == len(cands) and class_role:
-                for t, sd in zip(cands, seeded):
-                    nx = sd["x"][:len(t["x"])]
-                    t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
-                    at._set_x(t, nx, np.ones(len(nx), bool))
-                checks["seeded"] = [round(float(sd["seed_x"]), 1) for sd in seeded]
-                checks["reseeds"] = [sd["reseeds"] for sd in seeded]
-            elif len(seeded) == len(cands):     # independent seeds; roles (which is picked) kept from the pick rule
-                order = at.match_to(cands, seeded)
-                if seed_role:     # identity from line style: the wanted style goes to the picked candidate
-                    k = at.role_by_style(seeded, seed_role); pi = cands.index(T) if T in cands else 0
-                    rest = [sd for j, sd in enumerate(seeded) if j != k]
-                    order = rest[:pi] + [seeded[k]] + rest[pi:]
-                    checks["seed_styles"] = [dict(width=round(float(np.median(sd["width"])), 1), gap=round(sd["gap_frac"], 3)) for sd in seeded]
-                checks["reseeds"] = [sd["reseeds"] for sd in seeded]
-                for t, sd in zip(cands, order):
-                    nx = sd["x"][:len(t["x"])]
-                    t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
-                    at._set_x(t, nx, np.ones(len(nx), bool))
-                checks["seeded"] = [round(float(sd["seed_x"]), 1) for sd in seeded]
-            else:
-                T = at.apply_identity(T, cink)
-            checks["seg_curve_frac"] = round(float((cp > 0.5).mean()), 4)
+        cp = curve_probability(pan, seg_model or default_model())
+        cink = np.asarray(pan, bool) & (cp > 0.5)
+        cands = T.get("candidates") or [T]
+        seeded = at.seeded_multi_trace(cink, int(T["fy"]), len(cands)) if (len(cands) > 1 and seed_curves) else []
+        if len(seeded) == len(cands):     # independent seeds; roles from the pick rule or the line hint
+            order = at.match_to(cands, seeded)
+            if line_hint:
+                k = at.role_by_style(seeded, line_hint); pi = cands.index(T) if T in cands else 0
+                rest = [sd for j, sd in enumerate(seeded) if j != k]
+                order = rest[:pi] + [seeded[k]] + rest[pi:]
+                checks["seed_styles"] = [dict(width=round(float(np.median(sd["width"])), 1), gap=round(sd["gap_frac"], 3)) for sd in seeded]
+            for t, sd in zip(cands, order):
+                nx = sd["x"][:len(t["x"])]
+                t["off_left"] = nx <= 1; t["off_right"] = nx >= width - 2
+                at._set_x(t, nx, np.ones(len(nx), bool))
+            checks["seeded"] = [round(float(sd["seed_x"]), 1) for sd in seeded]
+            checks["reseeds"] = [sd["reseeds"] for sd in seeded]
         else:
-            T = at.apply_appearance(T, pan if amode == "panel" else GR_["residual"])
-        checks["appearance_s"] = round(_t.time() - t0, 1); checks["appearance_sideways"] = T.get("appearance_sideways")
-        checks["grid_layer"] = dict(v_lines=len(GR_["G"]["vlines"]), v_kind=GR_["G"]["v_kind"],
-                                    h_period=GR_["G"]["h_period"], heavy_v=len(GR_["G"]["heavy_v"]))
+            T = at.apply_identity(T, cink)
+        checks["seg_curve_frac"] = round(float((cp > 0.5).mean()), 4)
+        checks["appearance_s"] = round(_t.time() - t0, 1)
     v, wr = trace_to_values(pan, T, width, scale, scale_type, backup, wrap_side, use_hatch)
     iw = []
     if amode == "model" and backup is not None:   # explicit wrap transition onto the backup curve

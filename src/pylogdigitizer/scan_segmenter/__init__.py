@@ -1,16 +1,29 @@
 """ONNX scan segmenter (runtime: numpy + onnxruntime only). Labels each pixel of a 1-bit log scan
-as paper / grid / curveA / curveB / text. The model is trained locally on synthetic tiles
-(see ml_training_data.synth_scan); training code is not part of the package."""
+as paper / grid / curve / text. A small model (~1.5 MB) trained on synthetic tiles from clean KGS
+curves is bundled as the default (:func:`default_model`); retrain with notebooks/03_train_scan_segmenter
+(writes to your own folder and never replaces the bundled file) and pass ``seg_model=<path>``."""
 from __future__ import annotations
 
 import numpy as np
 
-CLASSES = ("paper", "grid", "curveA", "curveB", "text")   # pilot-1 model (5 outputs)
-CLASSES4 = ("paper", "grid", "curve", "text")               # merged-curve model (4 outputs)
+import pathlib
+
+CLASSES4 = ("paper", "grid", "curve", "text")
+MODEL_DIR = pathlib.Path(__file__).resolve().parent / "models"
+MODELS = {"default": "scan_seg_v2.onnx",          # synthetic KGS-style tiles (pilot 2)
+          "overflow": "scan_seg_overflow.onnx"}   # + overflow spikes / backup strokes (opt-in)
+
+
+def default_model(name: str = "default") -> str:
+    """Path of a bundled segmenter model ("default" or "overflow")."""
+    p = MODEL_DIR / MODELS[name]
+    if not p.exists():
+        raise FileNotFoundError(f"bundled segmenter model missing: {p}")
+    return str(p)
 
 
 def classes_for(n: int) -> tuple:
-    return {5: CLASSES, 4: CLASSES4}.get(n, tuple(f"c{i}" for i in range(n)))
+    return CLASSES4 if n == 4 else tuple(f"c{i}" for i in range(n))
 _SESS: dict = {}
 
 
@@ -63,12 +76,3 @@ def curve_probability(ink: np.ndarray, model_path: str, **kw) -> np.ndarray:
     names = classes_for(p.shape[0])
     return sum(p[i] for i, n in enumerate(names) if n.startswith("curve")).astype(np.float32)
 
-
-def curve_class_probability(ink: np.ndarray, model_path: str, **kw):
-    """(P(curveA), P(curveB)) per pixel for a curve-identity model (5 outputs; A = the heavier / solid
-    stroke style, B = the lighter / patterned one, learned from appearance only), else None."""
-    p = segment_scan(ink, model_path, **kw)
-    names = classes_for(p.shape[0])
-    if "curveA" not in names:
-        return None
-    return p[names.index("curveA")].astype(np.float32), p[names.index("curveB")].astype(np.float32)
