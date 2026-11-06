@@ -65,17 +65,8 @@ On some multi-curve digital prints a GR piece may be only partly captured (FORGE
 ![Chitwood 12 scan overlay](image/overlay_scan_chitwood.png)
 *Chitwood 12 (KGS): traced GR and snapped grid lines drawn on the original scan, so you can check that the grid sits on the printed lines in every track.*
 
-![Minzer 1 wrap overlay](image/overlay_scan_minzer_wrap.png)
-*Minzer 1 (KGS): high-value overflow is read on the backup scale and drawn where the backup stroke actually sits on the print.*
-
-![Utah FORGE CBL digital-print overlay](image/overlay_pdf_forge_cbl.jpg)
-*Utah FORGE 78B-32 CBL, page 7: digitized curves and the PDF’s own grid lines drawn on the rendered colour page.*
-
 ![Utah FORGE CBL original vs extracted grids and curves](image/overlay_pdf_forge_cbl_compare.jpg)
 *Utah FORGE 78B-32 CBL: original colour print (left) → extracted grids and curves drawn back in contrasting colours (right).*
-
-![Node editor](image/node_editor.png)
-*Node editor: drop a node (D) that snaps to nearby ink inside an adjustable circle and reconnects the curve instantly, without rerunning the model.*
 
 Scan examples are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOURCES.txt`). Colour digital-print example: the public Utah FORGE 78B-32 CBL ([GDR / OpenEI](https://gdr.openei.org/)).
 
