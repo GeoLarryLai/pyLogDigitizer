@@ -141,3 +141,6 @@
   touch the track edge broke CBL's wrap handling, so edge-touching pieces are not joined), and the picked
   piece is not visible in the render (likely clipped in the PDF) - the real-page overlay shows it.
 - Figures: /workspace/pld_viz_out/overlay_qa2/ (full + zoom each, residual JSONs).
+
+## 0.2.0 release prep (2026-11-05)
+- release/0.2.0 = dev/0.2-rectify + dev/0.2-pdf (clean merge). Version 0.2.0 (pyproject, __init__, Cargo, CITATION). Bundled segmenter ONNX now tracked (were gitignored). Wheel + sdist build locally; wheel installs and loads models. Not pushed / tagged / published.
