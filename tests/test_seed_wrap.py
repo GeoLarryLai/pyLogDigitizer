@@ -178,3 +178,18 @@ def test_ink_jump_wraps_through_slanted_connector():
     y = np.r_[np.full(20, 120.0), np.linspace(120, 12, 30), np.full(40, 12.0)]
     w2, c2 = sw.ink_jump_wraps(y, np.ones(len(y), bool), W, "right")
     assert w2 == [] and not c2.any()
+
+
+def test_ink_jump_wraps_infers_unseen_exit_from_continuity():
+    # main runs into the right edge zone, vanishes for a long gap, and only a backup near the left
+    # edge is inked afterwards (it later swings to mid-track); no drawn exit or matching jump
+    from pylogdigitizer import scale_wraparound as sw
+    W = 400
+    x = np.r_[np.linspace(200, 390, 40), np.full(30, 300.0), np.linspace(20, 30, 100),
+              np.linspace(30, 160, 40), np.full(30, 20.0)]
+    on = np.ones(len(x), bool); on[40:70] = False                          # gap: curve gone off the edge
+    wr, _ = sw.ink_jump_wraps(x, on, W, "right")
+    assert len(wr) == 1 and wr[0][0] == 70 and wr[0][1] >= 230
+    # same shape without the edge approach (curve stays mid-track before the gap): no wrap
+    y = x.copy(); y[:40] = np.linspace(80, 110, 40)
+    assert sw.ink_jump_wraps(y, on, W, "right")[0] == []

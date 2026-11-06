@@ -19,7 +19,8 @@ def detect_wraps(offscale: np.ndarray, min_len: int = 2) -> list[tuple[int, int]
 
 
 def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge: float = 0.12,
-                    off_out=None, off_in=None, jump: float = 0.5) -> list[tuple[int, int]]:
+                    off_out=None, off_in=None, jump: float = 0.5, cancel_at: float | None = None,
+                    cancel_closes: bool = False) -> list[tuple[int, int]]:
     """Wraps the tracer itself followed: the path leaves through the ``wrap_side`` edge and next
     appears at the opposite edge (it is now on the backup trace) until it jumps back the other way.
     ``off_out`` / ``off_in``: optional per-row flags for the off-scale columns beyond each edge.
@@ -33,36 +34,64 @@ def edge_jump_wraps(x: np.ndarray, width: float, wrap_side: str = "right", edge:
     # a continuous curve cannot cross half the track between two samples: such a jump into the
     # entry-edge zone is a wrap (the exit side is often faint, so only the landing must be at the edge)
     far = np.where(hi, 1.0, np.where(lo, 0.0, x))
-    out, a = [], None
+    out, a, last_lo = [], None, None
     for i in range(1, len(x)):
         if a is None and lo[i] and not hi[i] and far[i - 1] - far[i] > jump:
             a = i
         elif a is not None and lo[i - 1] and not lo[i] and far[i] - far[i - 1] > jump:
             out.append((a, i)); a = None
-        elif a is not None and far[i] > 1 - jump and not (far[i] - far[i - 1] > jump):
+        elif a is not None and far[i] > (1 - jump if cancel_at is None else cancel_at) and not (far[i] - far[i - 1] > jump):
             # the "backup" stretch drifted across the track without jumping back: it was a full-width
-            # excursion of the main curve (e.g. a cycle-skip spike), not a wrap
+            # excursion of the main curve (e.g. a cycle-skip spike), not a wrap. With ``cancel_closes``
+            # the wrap is kept up to the last entry-edge sample (the main curve came back unseen)
+            if cancel_closes and last_lo is not None and last_lo >= a:
+                out.append((a, last_lo + 1))
             a = None
+        if a is not None and lo[i]:
+            last_lo = i
     if a is not None:
         out.append((a, len(x)))
     return out
 
 
 def ink_jump_wraps(x: np.ndarray, on_ink: np.ndarray, width: float, wrap_side: str = "right",
-                   edge: float = 0.15, jump: float = 0.4, conn: float = 0.3):
+                   edge: float = 0.15, jump: float = 0.4, conn: float = 0.3, border: float = 4.0,
+                   min_run: int = 5, gap: int = 10, look: int = 30):
     """Wraps found on the inked part of a trace only. Where the curve leaves through the wrap edge
     and the backup re-enters at the opposite edge, a row-wise tracer often draws a slanted
     connector across empty paper instead of one jump, which hides the jump from
     ``edge_jump_wraps``. Dropping the off-ink samples restores it.
     Returns (wraps [a, b) in sample indices, connectors: boolean mask of off-ink samples that bridge
     more than ``conn`` of the width; these carry no reading and should be null)."""
-    x = np.asarray(x, float); on = np.asarray(on_ink, bool) & np.isfinite(x); n = len(x)
+    x = np.asarray(x, float); n = len(x)
+    on = np.asarray(on_ink, bool) & np.isfinite(x)
+    on &= (x > border) & (x < width - 1 - border)           # border-hugging samples are not curve evidence
+    p_ = np.r_[0, on.astype(np.int8), 0]; d_ = np.diff(p_)  # isolated specks inside a connector are not either
+    for a_, b_ in zip(np.flatnonzero(d_ == 1), np.flatnonzero(d_ == -1)):
+        if b_ - a_ < min_run:
+            on[a_:b_] = False
     idx = np.flatnonzero(on)
     conn_m = np.zeros(n, bool)
     if len(idx) < 3:
         return [], conn_m
-    fw = edge_jump_wraps(x[idx], width, wrap_side, edge=edge, jump=jump)
-    wr = [(int(idx[a]), int(idx[b]) if b < len(idx) else n) for a, b in fw]
+    # continuity: the curve ran into the wrap edge zone, vanished for >= ``gap`` samples, and came
+    # back near the opposite edge -> an exit the tracer never drew; insert it (an edge sample)
+    xr = x / float(width) if wrap_side == "right" else 1.0 - x / float(width)
+    seq_x, seq_i = [], []
+    for k, i in enumerate(idx):
+        if k and i - idx[k - 1] >= gap:
+            prev = xr[idx[max(0, k - look):k]]; nxt = xr[idx[k:k + look]]
+            if prev.max() > 1 - edge and nxt.min() < edge:
+                e_hi = width - 1.0 if wrap_side == "right" else 0.0
+                seq_x += [e_hi, width - 1.0 - e_hi]; seq_i += [i, i]
+        seq_x.append(x[i]); seq_i.append(i)
+    seq_x = np.array(seq_x); seq_i = np.array(seq_i)
+    # continuity: once the curve left through the wrap edge and the backup appeared at the other,
+    # the backup may swing far into the track (high values); only reaching the wrap edge zone itself
+    # without a jump (impossible for a backup) cancels the wrap
+    fw = edge_jump_wraps(seq_x, width, wrap_side, edge=edge, jump=jump, cancel_at=1 - edge, cancel_closes=True)
+    wr = [(int(seq_i[a]), int(seq_i[b]) if b < len(seq_i) else n) for a, b in fw]
+    wr = [(a, b) for a, b in wr if b > a]
     for p_, q_ in zip(idx[:-1], idx[1:]):
         if q_ - p_ > 1 and abs(x[q_] - x[p_]) > conn * width:
             conn_m[p_ + 1:q_] = True
