@@ -15,3 +15,11 @@ table.t.fit{table-layout:fixed;width:100%;font-size:11.5px} table.t.fit input,ta
 table.t.fit th:first-child,table.t.fit td:first-child{width:18px}
 details.more{margin:8px 0;border-top:1px solid var(--line);padding-top:4px} details.more summary{cursor:pointer;color:var(--mute);font-weight:600}
 .meter{display:flex;align-items:flex-end;gap:3px;height:36px;margin:2px 0 6px} .meter i{display:block;width:10px;border-radius:2px} #chkCard .q{margin:6px 0 8px;font-size:14px}
+
+/* Package identity and credits, outside the workflow and help/progress bar. */
+body{grid-template-areas:"top top top" "rail main side" "bar bar bar" "credits credits credits";grid-template-rows:44px minmax(0,1fr) 30px minmax(34px,auto)}
+#top .brand{position:relative;display:block;overflow:hidden;width:34px;height:34px;flex:0 0 34px}
+#top .brand img{position:absolute;width:40px;height:auto;max-width:none;left:-3px;top:-2px}
+.home-logo{width:130px;max-width:100%;height:auto;display:block;margin:0 auto}
+.app-credits{grid-area:credits;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px 16px;padding:7px 16px;border-top:1px solid var(--line);background:var(--panel);color:var(--mute);font-size:11.5px}
+@media(max-width:600px){.home-logo{width:108px}.app-credits{padding:7px 10px}}

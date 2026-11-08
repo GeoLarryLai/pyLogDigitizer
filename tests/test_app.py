@@ -246,3 +246,18 @@ def test_header_word_correction(app_sid):
         assert c.get(f"/app/api/{sid}/header/words").json()["words"][3]["text"] == "100"
     finally:
         e.header = old
+
+
+def test_package_logo_and_separate_credits(tmp_path):
+    from pylogdigitizer.app import create_app
+    c = TestClient(create_app(str(tmp_path)))
+    html = c.get("/").text
+    assert 'class="brand" title="pyLogDigitizer"' in html
+    assert html.count('class="home-logo"') == 1
+    assert '<h1>pyLogDigitizer</h1>' not in html
+    assert '<footer id="bar">' in html
+    assert html.index('<footer id="bar">') < html.index('<footer class="app-credits"')
+    assert 'Project by Larry Syu-Heng Lai, PhD.' in html
+    assert 'AGPL-3.0 or later license' in html
+    logo = c.get("/static/logo.png")
+    assert logo.status_code == 200 and logo.content.startswith(b"\x89PNG\r\n\x1a\n")
