@@ -25,6 +25,10 @@ Digitizing by hand is slow and hard to check. So I built a tool that does the te
 ```bash
 pip install pylogdigitizer
 ```
+or from `conda-forge` repository with `conda`:
+```bash
+conda install pylogdigitizer
+```
 
 From source (builds the Rust tracer, needs a Rust toolchain):
 
