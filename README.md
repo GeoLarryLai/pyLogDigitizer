@@ -10,7 +10,7 @@
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
 
-**pyLogDigitizer** turns well-log image scans, and digital-print PDFs, into LAS files. It finds the tracks, grid and depth numbers, reads the curve header, tells the curves apart (by ink colour on colour scans, by line style on black-and-white scans) and traces each one. A local browser app lets you check and fix every step. Everything runs on your own computer; nothing is uploaded.
+**pyLogDigitizer** is a machine-learning-assisted digitizer that turns well-log image scans and digital-print PDFs into LAS files. It finds the tracks, grid and depth numbers, reads the curve header, tells the curves apart (by ink colour on colour scans, by line style on black-and-white scans) and traces each one. A local browser app lets you check and fix every step. Everything runs on your own computer; nothing is uploaded.
 
 ## Installation
 
@@ -50,6 +50,7 @@ The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference.
 
 ## What it can do
 
+- Machine-learning assisted: a bundled U-Net (a small neural network) sorts every pixel of a scan into paper, grid, curve or text so tracing follows only curve ink, and deep-learning OCR reads curve names and scales from the header. Both are pretrained, run on an ordinary computer with no training per file, and can be retrained on your own scans.
 - Read colour image scans and tell the curves apart by ink colour.
 - Read black-and-white scans and tell the curves apart by line style (solid, dashed, dotted; thin or thick).
 - Find tracks, grid lines and depth numbers on their own, and read curve names and scales from the header with OCR.
