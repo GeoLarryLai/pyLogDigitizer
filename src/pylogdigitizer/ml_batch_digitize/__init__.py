@@ -128,16 +128,16 @@ def digitize_one(
         track=spec.get("track", "track1"),
         scale=tuple(spec.get("scale", (0.0, 150.0))),
     )
-    for opt in ("first_depth", "label_interval", "backup", "wrap_side", "use_hatch", "x_range", "rows", "min_width"):
+    for opt in ("first_depth", "label_interval", "backup", "wrap_side", "use_hatch", "x_range", "rows", "min_width",
+                "section", "depth_range"):
         if opt in spec and spec[opt] is not None:
             kw[opt] = spec[opt]
 
-    res_ml = wf.digitize_curve(
-        scan_path,
-        cost_mode=cost_mode,
-        ml_model=model_path,
-        **kw,
-    )
+    try:
+        res_ml = wf.digitize_curve(scan_path, cost_mode=cost_mode, ml_model=model_path, **kw)
+    except wf.SectionChoiceNeeded as e:     # several log sections: digitize the most detailed print
+        kw["section"] = max(e.sections, key=lambda c: c["px_per_ft"])["index"]
+        res_ml = wf.digitize_curve(scan_path, cost_mode=cost_mode, ml_model=model_path, **kw)
     T = res_ml["trace"]
     depth = np.asarray(res_ml["depth"], dtype=float)
     value = np.asarray(res_ml["value"], dtype=float)
@@ -212,7 +212,9 @@ def digitize_one(
                     switch_cost=p_par["switch_cost"],
                     use=p_par["use"],
                 )
-                T_conv = ct.finish_trace(c_conv_pad, p_conv, T["row0"], T["fy"], T["fx"], pad, p_par["edge_frac"])
+                T_conv = ct.finish_trace(c_conv_pad, p_conv, T["row0"], T["fy"], T["fx"], pad, p_par["edge_frac"],
+                                         centreline=p_par.get("centreline", True),
+                                         line_neutral=p_par.get("line_neutral", 0.85))
                 if "_hatch_rows" in T:
                     T_conv["_hatch_rows"] = T["_hatch_rows"]
                     T_conv["_hatch_rows_key"] = T.get("_hatch_rows_key")

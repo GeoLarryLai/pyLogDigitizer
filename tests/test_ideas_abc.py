@@ -21,7 +21,7 @@ def test_appearance_tracer_follows_prior_curve_not_thicker_line():
 
 
 @pytest.mark.xfail(strict=True, reason="known gap: nothing rewards the out-and-back of a flat spike yet; "
-                   "the tracer stays on the baseline (seen on WEATHERFORD ~3172/3197 ft too)")
+                   "the tracer stays on the baseline")
 def test_appearance_tracer_takes_flat_spike():
     H, W = 600, 300
     ink = np.zeros((H, W), bool); ink[:, 60:62] = True

@@ -6,12 +6,23 @@ import numpy as np
 
 
 def to_grid(depth, values, grid):
-    """Interpolate (depth, values) onto ``grid``; NaN outside the data range."""
+    """Interpolate (depth, values) onto ``grid``; NaN outside the data range and inside null stretches
+    (a grid depth whose neighbouring samples include a NaN stays NaN, so nulls are never scored as
+    values interpolated across them)."""
     d = np.asarray(depth, float); v = np.asarray(values, float)
-    ok = ~np.isnan(d) & ~np.isnan(v)
-    d, v = d[ok], v[ok]
-    o = np.argsort(d); d, v = d[o], v[o]
-    return np.interp(grid, d, v, left=np.nan, right=np.nan)
+    keep = ~np.isnan(d)
+    d, v = d[keep], v[keep]
+    o = np.argsort(d, kind="stable"); d, v = d[o], v[o]
+    grid = np.asarray(grid, float)
+    ok = ~np.isnan(v)
+    if not ok.any():
+        return np.full(grid.shape, np.nan)
+    out = np.interp(grid, d[ok], v[ok], left=np.nan, right=np.nan)
+    if not ok.all():
+        j = np.clip(np.searchsorted(d, grid), 1, len(d) - 1)
+        exact = np.isclose(grid, d[j]) & ok[j] | np.isclose(grid, d[j - 1]) & ok[j - 1]
+        out[~(ok[j - 1] & ok[j]) & ~exact] = np.nan
+    return out
 
 
 def align_depth(ref: np.ndarray, test: np.ndarray, max_shift: int = 40) -> int:
@@ -129,10 +140,11 @@ def value_fit(ref: np.ndarray, test: np.ndarray) -> dict:
 
 
 def qc_plot(depth: np.ndarray, ref: np.ndarray, test: np.ndarray, out: str, title: str = "",
-            labels: tuple[str, str] = ("reference LAS", "digitized"), xlim=None, extra: dict | None = None) -> str:
-    """Overlay log plot (depth down) + crossplot. Saves PNG to ``out``."""
+            labels: tuple[str, str] = ("reference LAS", "digitized"), xlim=None, extra: dict | None = None, dpi: int = 110,
+            figsize: tuple[float, float] = (8, 11)) -> str:
+    """Overlay log plot (depth down) + crossplot. Saves PNG to ``out`` at ``dpi`` (``figsize`` in inches)."""
     from matplotlib.figure import Figure  # no pyplot: works headless, leaves the notebook backend alone
-    fig = Figure(figsize=(8, 11)); ax, ax2 = fig.subplots(1, 2)
+    fig = Figure(figsize=figsize); ax, ax2 = fig.subplots(1, 2)
     ax.plot(ref, depth, "k", lw=0.6, label=labels[0])
     ax.plot(test, depth, "r", lw=0.6, alpha=0.8, label=labels[1])
     for k, v in (extra or {}).items():
@@ -146,5 +158,47 @@ def qc_plot(depth: np.ndarray, ref: np.ndarray, test: np.ndarray, out: str, titl
     ax2.plot([lo, hi], [lo, hi], "k--", lw=0.8); ax2.set_xlabel(labels[0]); ax2.set_ylabel(labels[1])
     m = metrics(ref, test)
     ax2.set_title(f"r={m['r']:.3f} RMSE={m['rmse']:.2f} n={m['n']}")
-    fig.suptitle(title); fig.tight_layout(); fig.savefig(out, dpi=110)
+    fig.suptitle(title); fig.tight_layout(); fig.savefig(out, dpi=dpi)
+    return out
+
+
+def logs_figure(out: str, logs: dict, image: np.ndarray | None = None, title: str = "", height_in: float = 14.0,
+                dpi: int = 110) -> str:
+    """The scan (left, as printed) next to the digitized logs (right), height-aligned row for row.
+
+    ``logs``: ``{tracks: [{name, left, right}], curves: [{name, color, track, row, frac}], ticks:
+    [[depth, row, major]], width}`` in sheet pixels, as made by the app (``frac`` = position across the
+    curve's track on its printed scale, null where off scale). Each curve is drawn in its own colour in
+    its own track, with the 10 ft depth grid of the scan. Saves PNG to ``out``."""
+    from matplotlib.figure import Figure
+    cur = [c for c in logs["curves"] if len(c["row"])]
+    if not cur:
+        raise ValueError("no traced curves to plot")
+    r0 = min(float(np.nanmin(c["row"])) for c in cur); r1 = max(float(np.nanmax(c["row"])) for c in cur)
+    tr = {t["name"]: t for t in logs.get("tracks") or []}
+    x0 = min([t["left"] for t in tr.values()] or [0.0]); x1 = max([t["right"] for t in tr.values()] or [float(logs.get("width", 1))])
+    pw = max(2.5, height_in * (x1 - x0) / max(1.0, r1 - r0))
+    n = 2 if image is not None else 1
+    fig = Figure(figsize=(pw * n + 0.9, height_in + 0.9))
+    axs = fig.subplots(1, n, sharey=True, squeeze=False)[0]
+    if image is not None:
+        a = axs[0]; im = image[int(r0):int(np.ceil(r1)) + 1, int(x0):int(np.ceil(x1)) + 1]
+        a.imshow(im, cmap="gray" if im.ndim == 2 else None, extent=(x0, x1, r1, r0), aspect="auto", interpolation="lanczos")
+        a.set_title("scan", fontsize=10); a.set_xticks([])
+    ax = axs[-1]
+    for d, r, major in logs.get("ticks") or []:
+        ax.axhline(r, color="#888" if major else "#ddd", lw=0.8 if major else 0.5, zorder=0)
+    for t in tr.values():
+        ax.axvline(t["left"], color="#555", lw=0.8); ax.axvline(t["right"], color="#555", lw=0.8)
+    for c in cur:
+        t = tr.get(c.get("track")) or dict(left=x0, right=x1)
+        f = np.asarray(c["frac"], float); f = np.where((f >= -0.01) & (f <= 1.01), f, np.nan)
+        ax.plot(t["left"] + f * (t["right"] - t["left"]), c["row"], color=c["color"], lw=0.9, label=c["name"])
+    ax.set_xlim(x0, x1); ax.set_ylim(r1, r0); ax.set_xticks([]); ax.set_title("digitized logs", fontsize=10)
+    tk = [q for q in logs.get("ticks") or [] if q[2]]
+    axs[0].set_yticks([q[1] for q in tk]); axs[0].set_yticklabels([f"{q[0]:g}" for q in tk]); axs[0].set_ylabel("Depth (ft)")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.005), ncol=min(5, len(cur)), fontsize=8, frameon=False)
+    if title:
+        fig.suptitle(title, fontsize=11)
+    fig.tight_layout(); fig.savefig(out, dpi=dpi)
     return out

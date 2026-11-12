@@ -1,7 +1,21 @@
-pyLogDigitizer example data - paired raster log scans + LAS files
-Source: Kansas Geological Survey (KGS), public data. Downloaded 2026-10-21.
-Selection: from the KGS elog-scan index (ks_elog_scans.txt) joined with the KGS LAS index (ks_las_files.txt) by KGS ID.
-All TIFFs: 1-bit black & white, 300 dpi. Header contents below were checked visually from header crops.
+pyLogDigitizer example data - public Kansas Geological Survey (KGS) well logs
+Credit: The source of this material is the Kansas Geological Survey website at
+        http://www.kgs.ku.edu/. All Rights Reserved.
+Terms:  https://www.kgs.ku.edu/General/copyright.html - may be used, modified and redistributed
+        with the credit line above; provided as-is without warranty; the KGS name may not be
+        used to imply endorsement.
+
+SHIPPED in example_data/ (small): three black-and-white examples (USA 'A' 16 crop, MOBIL 12-1
+227233, Chitwood 12 260245), each with a slim LAS extract, and the STONE 5-19 colour crop.
+FETCHED ON DEMAND (not shipped): every other file listed below, including the full original
+sheets of the shipped wells. pylogdigitizer.kgs_examples.fetch_kgs_example(well) downloads
+them from the URLs below, checks the SHA-256 recorded in src/pylogdigitizer/kgs_examples.py
+and caches them under ~/.cache/pylogdigitizer/kgs (or $PYLOGDIGITIZER_CACHE). Notebook 02
+(U-Net training) and notebook 03 (segmenter training) use this.
+
+Original downloads 2026-10-21. Selection: from the KGS elog-scan index (ks_elog_scans.txt)
+joined with the KGS LAS index (ks_las_files.txt) by KGS ID. All black-and-white TIFFs are 1-bit,
+300 dpi. Header contents below were checked visually from header crops.
 
 QC NOTE: The KGS LAS files are used as QC/reference for digitization. Many KGS LAS files
 for pre-1985 wells were themselves digitized from paper logs (e.g., USA 'A' 16 LAS has no curve units;
@@ -10,6 +24,16 @@ not ground truth. Expect depth shifts, smoothing, and digitizing errors in them.
 
 ======================================================================
 WELL 1: USA 'A' 16   -> folder USA_A_16_15-055-20536/
+Shipped:
+  4342_crop_3260-4770.tif  Crop of 4342.tif: curve-header band (rows 3420-3860: GR API 0-150,
+            X-CAL 6-16, backup GR 150-300 in track 1; tracks 2-3 header boxes are blank on this
+            print) joined with the main-section body rows 30500-54700 (about 3260-4770 ft,
+            about 15 px/ft). 2769 x 24640 px, 1-bit, group 4, 300 dpi, about 680 KB.
+            Track 1: GR (solid) and caliper (dotted); tracks 2-3: neutron / density porosity
+            curves in solid, dashed and dotted line styles (scales not printed on this header).
+  USA_A_16_4342_crop_3200-4800.las  Slim extract of 1042553273.las, 3200-4800 ft, 0.5 ft step:
+            DEPTH, GR, NPHI, RHOB, ILD (well header kept; KGS credit line in ~Other).
+
 ======================================================================
 Operator:     Helmerich and Payne, Inc.
 API:          15-055-20536      KGS kid: 1006052147
@@ -31,6 +55,11 @@ Files:
 
 ======================================================================
 WELL 2: MOBIL 12-1   -> folder MOBIL_12-1_15-189-20087/
+Shipped:
+  227233.tif  (unchanged original sheet)
+  MOBIL_12-1_227233_3950-5710.las  Slim extract of 1044084189.las, 3950-5710 ft: DEPTH, DT, SP,
+            ILD (well header kept; KGS credit line in ~Other).
+
 ======================================================================
 Operator:     Ashland Oil & Refining Co.
 API:          15-189-20087      KGS kid: 1006156159
@@ -80,6 +109,13 @@ Files:
   1044194859.las  LAS; STRT 300.0 / STOP 4481.0 / STEP 0.5 ft
             curves (valid range ft): SP(MV) 308-4480, ILD(OHMM) 301-4470, GR:1(GAPI) 3450-4174, NEUT:1(API) 3450-4174, GR:2(GAPI) 331-2620, NEUT:2(API) 331-2620, CALI(IN) 301-2624, DT(US/F) 300-2623
             https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/28S12W/1044194859.las   (576 KB)
+Shipped:
+  260245.tif  (unchanged original sheet)
+  Chitwood_12_260245_300-2650.las  Slim extract of 1044194859.las, 300-2650 ft: DEPT, SP, ILD,
+            GR (= GR:2 of the original file, the curve on sheet 260245), NEUT (= NEUT:2).
+
+FETCHED ON DEMAND (not shipped) - wells 4-14 below
+----------------------------------------------------------------------
 
 WELL 4: Hall 'D' 4   -> folder Hall_D_4_15-051-05370/
 ----------------------------------------------------------------------
@@ -279,3 +315,50 @@ Files:
             https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/E/33S5/208462.tif   (2700 x 29716 px, 1.1 MB)
   Validation: KGS formation tops (well page) + nearby LAS well in the same section: West Maddix Unit 7 WSW (kid 1043999431, https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1043999431)
             NEARBY_1043999431_1044819475.las  <- https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/kcc_logs_2014/1044819475.las
+
+======================================================================
+WELL (colour raster crop): STONE #5-19   -> folder STONE_5-19_15-055-22611/
+======================================================================
+Operator:     BEREXCO, LLC.
+API:          15-055-22611      KGS kid: 1054891848
+Location:     Finney County, Kansas; Sec. 19, T26S, R33W (SW NE NE NE); KB 2927 ft, GL 2914 ft
+Field:        IVANHOE EXTENSION
+Logging co.:  Eli Wireline, Triple Combo, logged 02-Aug-2024 (run one, 2500-5280 ft)
+Well page:    https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1054891848
+Credit:       The source of this material is the Kansas Geological Survey website at
+              http://www.kgs.ku.edu/. All Rights Reserved.
+Terms:        KGS website terms (https://www.kgs.ku.edu/General/copyright.html): the material
+              may be used, modified and redistributed with the credit line above; it is
+              provided as-is without warranty, and the KGS name may not be used to imply
+              endorsement. The LAS file is a log courtesy of the Kansas Corporation Commission
+              (KCC), served by KGS.
+Provenance:   This is a colour digital-plot raster (RGB TIFF written by the logging company's
+              plotting software), not an analog paper scan. The grid and the thin track borders
+              are printed in mid-grey (128,128,128). The KGS PDF twin of the same log
+              (600699.pdf) holds raster pages only (no vector curves, no embedded values).
+
+Original files:
+  600699.tif  Triple Combo (Eli Wireline), colour, 200 dpi
+              https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/Elog3/kcc_logs_2024/600699.tif
+              (1600 x 33000 px, RGB, about 11 MB)
+  600699.pdf  same log as raster PDF
+              https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/kcc_logs_2024/600699.pdf
+  1055571405.las  digital log data (LAS 2.0, 0-5313.5 ft, 0.5 ft step)
+              https://kgsimages.blob.core.windows.net/web/web_1/WebDocs/WellLogs/kcc_logs_2024/1055571405.las
+
+Shipped crop (kept small for the example notebook; 10 px/ft):
+  triple_combo_color_crop.tif
+              Concatenation of the curve-header band (rows 2376-2790 of 600699.tif, 414 rows:
+              curve names and scales for the three tracks) and a body window covering about
+              4390-4890 ft (rows 21706-26706). 1600 x 5414 px, exact indexed colour (49
+              colours, no re-quantisation), LZW, about 500 KB, 200 dpi.
+  STONE_5-19_triple_combo_4385-4895.las
+              Slim extract of 1055571405.las over 4385-4895 ft (0.5 ft step, 1021 rows) with the
+              plotted curves: DEPT, GR, SP, RILD, RILM, RLL3, CNPOR, DPOR, PE, RHOC, DCAL.
+              Well header kept; the KGS credit line is repeated in its ~Other section.
+
+Printed curve header: track 1 Gamma Ray 0-150 GAPI (solid blue), SP -100 to 100 mV (red
+dashed), RxoRt, DCAL and MELCAL 6-16 in (black); depth column MEL15 / MEL20 0-20 ohm-m; track 2
+(log, 0.2-200 ohm-m) Deep (RILD, dark-green dashed), Medium (RILM, red dashed) and Shallow
+(RLL3, blue dotted) resistivity; track 3 CN Porosity (CNPOR, red dashed) and Density Porosity
+(DPOR, solid blue) 30 to -10 pu, PE 0-20 (light-green dashed), RHOC -0.25 to 0.25 g/cc.

@@ -179,7 +179,7 @@ def render_tile(rng: np.random.Generator, curves: list[dict], H: int = 512, W: i
 
 
 # ----------------------------------------------------------------------------- scan-like tiles (v2)
-# Ranges measured on 1-bit KGS crops (ELY_1, Hall_D_4, Swanson_1, WEATHERFORD_B_1; scan_stats):
+# Ranges measured on 1-bit KGS scans from the fetch list (kgs_examples; scan_stats):
 # v-line width 2-5 px (heavy up to 9), h-line width 1.5-6 (heavy up to 10), depth-line spacing
 # 30-48 px, curve stroke 3.5-11 px, speckle 3-6000 / Mpx, pin holes 0-260 / Mpx.
 REAL_RANGES = dict(v_w=(2, 5), v_heavy_add=(1, 4), h_w=(1.5, 6), h_heavy_add=(2, 4), h_sp=(30, 48),
@@ -347,3 +347,50 @@ def render_scan_tile(rng: np.random.Generator, curves: list[dict], H: int = 256,
         dirm = cv2.warpAffine(dirm, M, (W, H), flags=cv2.INTER_NEAREST, borderValue=np.nan)
     meta.update(skew_deg=ang)
     return dict(image=np.where(ink, 0, 255).astype(np.uint8), label=lab, direction=dirm.astype(np.float32), meta=meta)
+
+
+def draw_styled_line(img: np.ndarray, x: np.ndarray, style: str, width: int, dash: float = 22.0,
+                     gap: float = 9.0, dot: float = 3.0, dot_gap: float = 8.0) -> np.ndarray:
+    """Draw one curve (``x`` per row, px) onto a bool image in a line style: 'solid', 'dashed',
+    'dotted' or 'dash-dot' (pattern lengths along the line, px). Rows where x is NaN are skipped."""
+    import cv2
+    u8 = img.astype(np.uint8)
+    y = np.arange(len(x), dtype=float)
+    ok = np.isfinite(x)
+    pts = np.c_[np.where(ok, x, 0.0), y]
+    arc = np.r_[0, np.cumsum(np.hypot(*np.diff(pts, axis=0).T))]
+    if style == "solid":
+        on = np.ones(len(pts), bool)
+    elif style == "dashed":
+        on = (arc % (dash + gap)) < dash
+    elif style == "dotted":
+        on = (arc % (dot + dot_gap)) < dot
+    elif style == "dash-dot":
+        per = dash + gap + dot + gap
+        a = arc % per
+        on = (a < dash) | ((a >= dash + gap) & (a < dash + gap + dot))
+    else:
+        raise ValueError(f"unknown line style {style!r}")
+    for k in range(len(pts) - 1):
+        if on[k] and ok[k] and ok[k + 1]:
+            p0 = tuple(int(round(v)) for v in pts[k]); p1 = tuple(int(round(v)) for v in pts[k + 1])
+            cv2.line(u8, p0, p1, 1, int(width))
+    return u8.astype(bool)
+
+
+def render_style_track(xs: list[np.ndarray], styles: list[str], widths: list[int], W: int,
+                       grid_dx: int = 50, grid_dy: int = 30, heavy_every: int = 10,
+                       border: int = 6) -> np.ndarray:
+    """1-bit track (True = ink) with a printed grid (thin lines every ``grid_dx`` / ``grid_dy`` px,
+    a heavier line every ``heavy_every`` rows of the grid, thick borders) and curves ``xs`` drawn
+    in the given line ``styles`` and stroke ``widths``. For line-style tests."""
+    H = len(xs[0])
+    img = np.zeros((H, W), bool)
+    for x0 in range(0, W, grid_dx):
+        img[:, x0:x0 + 2] = True
+    for k, y0 in enumerate(range(0, H, grid_dy)):
+        img[y0:y0 + (4 if k % heavy_every == 0 else 2)] = True
+    img[:, :border] = True; img[:, W - border:] = True
+    for x, st, w in zip(xs, styles, widths):
+        img = draw_styled_line(img, np.asarray(x, float), st, w)
+    return img

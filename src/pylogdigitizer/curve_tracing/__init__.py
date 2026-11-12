@@ -432,7 +432,8 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
                 caliper_weight: float = 0.55, prob_map: np.ndarray | None = None, mask_other: bool = False,
                 seg: bool | str = False, seg_mix: float = 0.5, avoid_paths: list | None = None,
                 avoid_band: int = 3, avoid_cost: float = 0.6, grid_veto: bool | float = False,
-                line_neutral: float = 0.85, center_weight: float = 0.0, grid_removed: bool = False) -> dict:
+                line_neutral: float = 0.85, center_weight: float = 0.0, grid_removed: bool = False,
+                line_frac: float = 0.6, centreline: bool = True) -> dict:
     """Trace the dominant continuous thick curve in a rectified track panel.
 
     Supports ``cost_mode="conventional" | "ml" | "blend"``. When ``cost_mode`` is ``"ml"`` or
@@ -447,11 +448,21 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     ``line_neutral``: cost of straight vertical runs and grid columns (crossed, not followed).
     ``center_weight``: extra cost at the edges of thick strokes (0 = off), so the path follows the
     stroke centreline instead of hugging one edge.
+    ``line_frac``: a row counts as a horizontal grid / depth line when at least this share of the track
+    is ink. Clean digital plots draw every grid line across the full track, so the colour preset uses
+    0.9: a thick curve excursion running most of the way to the edge (an off-scale spike) then stays
+    curve ink instead of being taken for a line band and cut across.
+    ``centreline`` (default True): x follows the ink centre and gaps are joined straight
+    (:func:`ink_centreline`); False gives the raw DP cell centres (the 0.2.x output). Stored in
+    ``T["params"]`` so assisted re-traces use the same setting.
     ``grid_removed``: trace on :func:`separation.remove_grid` ink (grid lattice, depth-line bands and
     thick reference lines erased, curve gaps at crossings bridged); grid columns and the grid veto
     are then not needed. The cleaned panel is returned as ``T["traced_panel"]``.
     """
     from pylogdigitizer import track_grid_detection as tgd
+    if center_weight >= 0.5:
+        # stroke edges would then cost >= 0.5 and stop counting as ink in the centreline step
+        raise ValueError(f"center_weight must be below 0.5 (got {center_weight})")
     if mask_other:
         from pylogdigitizer import separation
         panel = separation.curve_layer(panel)
@@ -485,7 +496,7 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
         gcols = [(l["x0"] - grid_pad, l["x1"] + grid_pad) for l in vl] + list(exclude_cols or [])
     cost_conv, lab = build_cost(panel, gcols, min_width=min_width, fy=fy, fx=fx, min_area=min_area,
                                 straight_len=straight_len, return_labels=True, line_neutral=line_neutral,
-                                center_weight=center_weight)
+                                center_weight=center_weight, line_frac=line_frac)
     cost = cost_conv
     seg_p = None
     if seg:
@@ -574,7 +585,13 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
     anc = [((r - row0) / fy, x / fx + pad) for r, x in anchors_px] if anchors_px else None
     path = trace(cost, max_step=max_step, smooth=smooth, seg_weight=seg_weight, anchors=anc,
                  labels=lab, switch_cost=switch_cost, use=use)
-    T = finish_trace(cost, path, row0, fy, fx, pad, edge_frac)
+    # the run centre may use the lowest-cost cells only when the cost is the plain centre weight;
+    # ML / blend / seg / grid-veto costs vary per cell, and their minimum can sit at a stroke edge
+    centre_min = bool(center_weight > 0 and cost_mode == "conventional" and not seg and not grid_veto)
+    keep = {int(np.clip(round((r - row0) / fy - 0.5), 0, len(path) - 1)): float(x)
+            for r, x in anchors_px} if anchors_px else None
+    T = finish_trace(cost, path, row0, fy, fx, pad, edge_frac, centreline=centreline, line_neutral=line_neutral,
+                     min_cost_centre=centre_min, keep=keep)
     if prob_map is not None:
         p_along = prob_map[np.arange(len(T["path"])), T["path"]]
         k = np.ones(15) / 15.0
@@ -602,6 +619,9 @@ def trace_track(panel: np.ndarray, row0: int = 0, fy: int | None = None, fx: int
             cost_mode=cost_mode,
             ml_weight=ml_weight,
             caliper_weight=caliper_weight,
+            centreline=centreline,
+            line_neutral=line_neutral,
+            min_cost_centre=centre_min,
         ),
     )
     return T
@@ -782,6 +802,19 @@ def auto_pick_score(f: dict) -> float:
     return f["on_track"] * min(1.0, f["on_ink"] / 0.8) * (1.0 - f["flat"]) * (f["spread"] + 4.0 * f["rough"])
 
 
+_ROW_KEYS = ("path", "path_padded", "x", "conf", "off_left", "off_right")
+
+
+def _swap_rows(A: dict, B: dict, sw: np.ndarray) -> None:
+    """Swap the per-row values of two candidate traces at rows ``sw`` (in place)."""
+    sw = np.asarray(sw, bool)
+    if not sw.any():
+        return
+    for k in _ROW_KEYS:
+        if k in A and k in B and np.shape(A[k]) == sw.shape:
+            A[k], B[k] = np.where(sw, B[k], A[k]), np.where(sw, A[k], B[k])
+
+
 def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str | int = "auto",
                 min_on_ink: float = 0.4, cross: bool = True, style: bool = True,
                 legend: list | None = None, legend_target: int = 0, pick_margin: float = 0.0,
@@ -789,7 +822,8 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
     """Trace up to ``n_curves`` curves sharing a track: each pass treats the curves already traced
     as used ink (``avoid_cost`` 0.97 by default: a later pass must find other ink, so candidates are
     distinct curves, or the pass is dropped). ``pick``: an index (0 = strongest), "rough" (most
-    thin-bed detail) or "auto" (:func:`auto_pick_score`, LAS-free). A pass is kept
+    thin-bed detail), "left" / "right" (two curves that never cross, e.g. two curves of one line
+    style: the candidates are sorted row by row and the left or right one is returned) or "auto" (:func:`auto_pick_score`, LAS-free). A pass is kept
     only when at least ``min_on_ink`` of its samples are on ink. ``style``: after the crossing
     untangle, re-assign segments by stroke width (:func:`restyle_segments`). ``legend``: line
     styles read from the track header (header_legend.legend_styles); with ``pick="legend"`` the
@@ -812,22 +846,20 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
         if Ts and on < min_on_ink:
             break
         Ts.append(T)
-    if cross and len(Ts) == 2:   # re-assign segments at crossings so each candidate follows one curve
+    sided = isinstance(pick, str) and pick in ("left", "right")
+    if sided and len(Ts) == 2:
+        # two curves of one style that never cross (e.g. two dashed curves in one track): sort the
+        # candidates row by row, so candidate 0 is the left curve and candidate 1 the right one
         A, B = Ts
-        sw = untangle(A["path"], B["path"], near=max(1.0, 4.0 / A["fx"]))
-        if sw.any():
-            for k in ("path", "path_padded", "x", "conf", "off_left", "off_right"):
-                a, b = A[k].copy(), B[k].copy()
-                a[sw], b[sw] = B[k][sw], A[k][sw]
-                A[k], B[k] = a, b
-    if style and len(Ts) == 2:   # per-segment identity by stroke width (thick vs thin curve)
+        # sort by the x that is returned (the centreline), off-scale rows at their side
+        side = lambda T_: np.where(T_["off_left"], -np.inf, np.where(T_["off_right"], np.inf, T_["x"]))
+        _swap_rows(A, B, side(B) < side(A))
+    if cross and not sided and len(Ts) == 2:   # re-assign segments at crossings so each candidate follows one curve
         A, B = Ts
-        sw = restyle_segments(A, B, path_widths(panel, A), path_widths(panel, B), near=max(1.0, 4.0 / A["fx"]))
-        if sw.any():
-            for k in ("path", "path_padded", "x", "conf", "off_left", "off_right"):
-                a, b = A[k].copy(), B[k].copy()
-                a[sw], b[sw] = B[k][sw], A[k][sw]
-                A[k], B[k] = a, b
+        _swap_rows(A, B, untangle(A["path"], B["path"], near=max(1.0, 4.0 / A["fx"])))
+    if style and not sided and len(Ts) == 2:   # per-segment identity by stroke width (thick vs thin curve)
+        A, B = Ts
+        _swap_rows(A, B, restyle_segments(A, B, path_widths(panel, A), path_widths(panel, B), near=max(1.0, 4.0 / A["fx"])))
     for t in Ts:
         t["style"] = {k: v for k, v in path_style(panel, t).items() if k != "widths"}
     if legend:
@@ -845,6 +877,8 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
         t["score"] = auto_pick_score(t["features"])
     if isinstance(pick, (int, np.integer)):
         i = int(min(pick, len(Ts) - 1))
+    elif sided:
+        i = 0 if (pick == "left" or len(Ts) < 2) else 1
     elif pick == "second":     # the companion curve: second-best auto score (e.g. DPHI beside NPHI)
         order = np.argsort([-t["score"] for t in Ts])
         i = int(order[1] if len(order) > 1 else order[0])
@@ -860,10 +894,222 @@ def trace_multi(panel: np.ndarray, row0: int = 0, n_curves: int = 2, pick: str |
     return T
 
 
+def ink_centreline(cost: np.ndarray, path_padded: np.ndarray, pad: int, fx: int, fy: int = 1,
+                   ink_thr: float = 0.5, search: int = 1, max_run_frac: float = 0.35, max_gap: int = 60,
+                   max_dash_rows: int = 60, max_dash_frac: float = 0.15, edge_frac: float = 0.02,
+                   line_neutral: float = 0.85, min_cost_centre: bool = True,
+                   keep: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Panel x of a DP path, moved onto the curve ink centreline and joined straight across gaps.
+
+    The DP picks one cell per row and charges the same for holding x through a gap (dash gap, grid
+    column, depth line) and stepping sideways later as for going there diagonally, so a raw path can
+    run vertically through a gap and then jump (a staircase). A shallow dash is also wider than it
+    is tall, so a row-by-row centre of it stays put for its whole height and then jumps to the next
+    dash. Here:
+
+    * every row where the path sits on (or within ``search`` cells of) curve ink (``cost < ink_thr``)
+      gives a centreline sample: the centre of that ink run, or of its lowest-cost cells when the
+      cost map carries a centre weight (half-cell precision);
+    * an ink piece that the path visits and that lies flatter than 45 degrees (a dash or dot of a
+      shallow stretch, at most ``max_dash_rows`` DP rows tall) is replaced by its two ends along its
+      own long axis (from its pixel moments), so neighbouring dashes are joined end to end; pieces
+      longer than ``max_dash_frac`` of the track width (a solid excursion, an off-scale spike) keep
+      their row centres;
+    * a visited ink piece that runs out of one side of the track (an off-scale excursion clipped
+      at the edge; within ``edge_frac`` of it, along a run at least twice the stroke width) gives
+      samples on that edge wherever it reaches it, so the trace goes out with the ink (and is flagged off-scale there by :func:`finish_trace`);
+    * x between samples (gaps up to ``max_gap`` DP rows, not parked off-scale) lies on the straight
+      line between them, unless the DP crossed the gap on neutral ink (cost ``line_neutral``: a
+      near-vertical stretch given the straight-run cost) and joins the samples at both
+      ends without a jump (at least 85 % of its rows): then that ink is the curve and the DP x is kept.
+
+    ``min_cost_centre``: use the centre of a run's lowest-cost cells (right for the plain
+    ``center_weight`` cost); False uses the geometric run centre (ML / blend / seg costs vary per
+    cell). ``keep``: {DP row: panel x} samples taken as exact (user pins), whatever the ink there.
+
+    No averaging over rows: samples are the ink itself, gaps are straight joins. Runs longer than
+    ``max_run_frac`` of the track (merged with a horizontal line), or much wider than the typical
+    stroke along the path (two curves side by side), keep the DP x.
+    Returns ``(x, on_ink)``."""
+    import cv2
+    cost = np.asarray(cost)
+    P = np.asarray(path_padded, np.int64)
+    h, ncol = cost.shape
+    w = ncol - 2 * pad
+    on = np.zeros(h, bool)
+    if h == 0 or w <= 0:
+        return np.zeros(h), on
+    x = (np.clip(P - pad, 0, w - 1) * fx + fx / 2).astype(float)
+    max_run = max(3, int(max_run_frac * w))
+    cin = np.ascontiguousarray(cost[:, pad:pad + w])
+    ink = cin < ink_thr
+    parked = (P < pad) | (P >= pad + w)
+    n_lab, lab = cv2.connectedComponents(ink.astype(np.uint8), connectivity=8)
+    comp = np.zeros(h, np.int64)
+    cell = np.zeros(h, np.int64)
+    ra = np.zeros(h, np.int64)
+    rb = np.zeros(h, np.int64)
+    xr = x.copy()
+    for k in range(h):
+        if parked[k]:
+            continue
+        c = int(P[k] - pad)
+        row = ink[k]
+        cand = [c + d for d in sorted(range(-search, search + 1), key=abs) if 0 <= c + d < w and row[c + d]]
+        if not cand:
+            continue
+        a = b = cand[0]
+        while a > 0 and row[a - 1]:
+            a -= 1
+        while b < w - 1 and row[b + 1]:
+            b += 1
+        on[k] = True
+        comp[k] = lab[k, cand[0]]
+        cell[k] = cand[0]
+        ra[k], rb[k] = a, b
+    runw = rb - ra + 1
+    # a run much wider than the stroke is two curves side by side (or a curve merged with a line):
+    # its centre lies between them, so such rows keep the DP x
+    wide_run = max_run
+    if on.any():
+        mw = float(np.median(runw[on]))
+        wide_run = min(max_run, int(max(2.0 * mw, mw + 3.0)))
+    for k in np.flatnonzero(on):
+        a, b = int(ra[k]), int(rb[k])
+        if b - a + 1 <= wide_run:
+            # centre of the run, or of its lowest-cost cells when the cost carries a centre weight
+            # (part of a wide stroke may be marked neutral, e.g. a near-vertical stretch)
+            if min_cost_centre:
+                seg = cin[k, a:b + 1]
+                lo = np.flatnonzero(seg <= seg.min() + 1e-6)
+                xr[k] = (2 * a + lo[0] + lo[-1]) / 2 * fx + fx / 2
+            else:
+                xr[k] = (a + b) / 2 * fx + fx / 2
+    # flat ink pieces (dashes / dots of a shallow stretch): their two ends along the long axis
+    visited = np.unique(comp[on])
+    visited = visited[visited > 0]
+    flat_ends: dict[int, tuple] = {}
+    edge_x: dict[int, float] = {}
+    if len(visited):
+        yy, xx = np.nonzero(lab)
+        ll = lab[yy, xx]
+        sel = np.isin(ll, visited)
+        yy, xx, ll = yy[sel], xx[sel], ll[sel]
+        # a visited piece that runs out of ONE side of the track (an off-scale excursion clipped at
+        # the edge): wherever it reaches that edge, the curve is at or past the edge. Pieces are
+        # joined across thin vertical grid columns (which split a wide excursion in the cost map).
+        ec = max(1, int(round(edge_frac * w)))
+        closed = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((1, 5), np.uint8))
+        n_e, lab_e = cv2.connectedComponents(closed, connectivity=8)
+        # a clipped excursion lies along the edge: its run there is much wider than the stroke
+        min_run = max(3, int(np.ceil(2.0 * np.median(runw[on])))) if on.any() else 3
+        ko = np.flatnonzero(on)
+        vis_e = np.unique(lab_e[ko, cell[ko]])
+        ey, ex = np.nonzero(lab_e)
+        el = lab_e[ey, ex]
+        for i in vis_e:
+            if i == 0:
+                continue
+            m = el == i
+            lft, rgt = m & (ex < ec), m & (ex >= w - ec)
+            if lft.any() == rgt.any():
+                continue
+            xe, rr = (0.0, ey[lft]) if lft.any() else (float(w * fx), ey[rgt])
+            for k in np.unique(rr):
+                if parked[k]:
+                    continue
+                row = closed[k]
+                if xe == 0.0:
+                    a = int(np.flatnonzero(row[:ec])[0]); b = a
+                    while b < w - 1 and row[b + 1]:
+                        b += 1
+                else:
+                    b = w - ec + int(np.flatnonzero(row[w - ec:])[-1]); a = b
+                    while a > 0 and row[a - 1]:
+                        a -= 1
+                if b - a + 1 >= min_run:
+                    edge_x[int(k)] = xe
+        yy, xx = yy * float(fy), xx * float(fx)
+        n = np.bincount(ll, minlength=n_lab).astype(float)
+        sy, sx = np.bincount(ll, yy, n_lab), np.bincount(ll, xx, n_lab)
+        syy, sxx, sxy = np.bincount(ll, yy * yy, n_lab), np.bincount(ll, xx * xx, n_lab), np.bincount(ll, xx * yy, n_lab)
+        rmin = np.full(n_lab, np.inf); rmax = np.full(n_lab, -np.inf)
+        np.minimum.at(rmin, ll, yy); np.maximum.at(rmax, ll, yy)
+        for i in visited:
+            if n[i] < 3 or (rmax[i] - rmin[i]) / fy > max_dash_rows:
+                continue
+            my, mx = sy[i] / n[i], sx[i] / n[i]
+            cyy, cxx, cxy = syy[i] / n[i] - my * my, sxx[i] / n[i] - mx * mx, sxy[i] / n[i] - mx * my
+            lam, vec = np.linalg.eigh(np.array([[cxx, cxy], [cxy, cyy]]))
+            vx, vy = vec[:, 1]
+            if abs(vx) <= abs(vy):          # steeper than 45 degrees: row centres already follow it
+                continue
+            half = np.sqrt(3.0 * max(lam[1], 0.0))
+            if 2 * half > max_dash_frac * w * fx:
+                continue
+            ends = sorted([(my - half * vy, mx - half * vx), (my + half * vy, mx + half * vx)])
+            flat_ends[int(i)] = tuple((r / fy, xv + fx / 2) for r, xv in ends)   # (DP row, panel x)
+    keep = {int(k): float(v) for k, v in (keep or {}).items() if 0 <= int(k) < h and not parked[int(k)]}
+    pts_r, pts_x = [], []
+    for k in np.flatnonzero(on):
+        if int(comp[k]) not in flat_ends and int(k) not in edge_x and int(k) not in keep:
+            pts_r.append(float(k)); pts_x.append(float(xr[k]))
+    for k, xv in keep.items():      # user pins: exact samples, whatever the ink there
+        pts_r.append(float(k)); pts_x.append(xv)
+    for k, xe in edge_x.items():
+        on[k] = True
+        pts_r.append(float(k)); pts_x.append(xe)
+    for ends in flat_ends.values():
+        for r, xv in ends:
+            pts_r.append(float(np.clip(r, 0, h - 1))); pts_x.append(float(xv))
+    if not pts_r:
+        return x, on
+    o = np.argsort(pts_r, kind="stable")
+    pr, px = np.asarray(pts_r)[o], np.asarray(pts_x)[o]
+    ks = np.arange(h, dtype=float)
+    j = np.searchsorted(pr, ks, side="right")          # pr[j-1] <= k < pr[j]
+    inside = (j > 0) & (j < len(pr))
+    jl, jr = np.clip(j - 1, 0, len(pr) - 1), np.clip(j, 0, len(pr) - 1)
+    span = pr[jr] - pr[jl]
+    ok = inside & (span <= max_gap + 1) & ~parked
+    t = np.where(span > 0, (ks - pr[jl]) / np.where(span > 0, span, 1), 0.0)
+    xi = px[jl] + t * (px[jr] - px[jl])
+    exact = (j > 0) & (pr[jl] == ks)
+    # a gap the DP crosses on neutral ink (a near-vertical stretch of the curve given the
+    # ``line_neutral`` cost of straight runs) and that joins the samples at both ends without a jump is the curve
+    # itself: keep the DP x there. A grid column ridden through a gap does not join both ends.
+    gap = ok & ~on
+    if gap.any():
+        pc = np.abs(cost[np.arange(h), np.clip(P, 0, ncol - 1)] - line_neutral) < 0.02
+        # within one stroke width (the DP may sit on either side of a wide stroke)
+        tol = max(3.0, 1.5 * fx, (float(np.median(runw[on])) + 1.0) * fx if on.any() else 0.0)
+        idx = np.flatnonzero(gap)
+        for g in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+            g0, g1 = int(g[0]), int(g[-1])
+            # the DP path itself enters and leaves the gap without a jump (a staircase holds x
+            # through the gap and jumps at its end)
+            joined = abs(x[g0] - x[max(g0 - 1, 0)]) <= tol and abs(x[g1] - x[min(g1 + 1, h - 1)]) <= tol
+            straight = np.ptp(x[g0:g1 + 1]) <= tol      # a straight vertical run, as the neutral cost marks
+            if pc[g0:g1 + 1].mean() >= 0.85 and joined and straight:
+                ok[g0:g1 + 1] = False
+                on[g0:g1 + 1] = True
+                xr[g0:g1 + 1] = x[g0:g1 + 1]
+    x = np.where(ok, xi, np.where(on & ~parked, xr, x))
+    x = np.where(exact & ~parked & ~ok, px[jl], x)
+    for k, xv in keep.items():
+        x[k] = xv; on[k] = True
+    return np.clip(x, 0, w * fx), on
+
+
 def finish_trace(cost: np.ndarray, path_padded: np.ndarray, row0: int, fy: int, fx: int, pad: int,
-                 edge_frac: float = 0.02) -> dict:
+                 edge_frac: float = 0.02, centreline: bool = True, line_neutral: float = 0.85,
+                 min_cost_centre: bool = True, keep: dict | None = None) -> dict:
     """DP path in padded cost columns -> trace dict (rows, x, conf, off_left/right, ...).
-    Shared by :func:`trace_track` and the assisted re-trace (``assisted_tracing``)."""
+    Shared by :func:`trace_track` and the assisted re-trace (``assisted_tracing``).
+    ``centreline``: x follows the ink centre and gaps are joined straight (:func:`ink_centreline`);
+    ``line_neutral`` / ``min_cost_centre`` / ``keep`` go to :func:`ink_centreline` (``keep``: user pins,
+    {DP row: panel x}, kept exactly). ``path`` / ``path_padded`` keep the raw DP cells (anchors and
+    local re-traces use them)."""
     path_padded = np.asarray(path_padded, np.int32)
     conf = confidence(cost, path_padded)
     wcols = cost.shape[1] - 2 * pad
@@ -872,7 +1118,14 @@ def finish_trace(cost: np.ndarray, path_padded: np.ndarray, row0: int, fy: int, 
     off_right = (path_padded >= cost.shape[1] - pad - e)
     path = np.clip(path_padded - pad, 0, wcols - 1)
     rows = row0 + np.arange(len(path)) * fy + fy / 2
-    x = path * fx + fx / 2
+    if centreline:
+        x, _ = ink_centreline(cost, path_padded, pad, fx, fy, edge_frac=edge_frac, line_neutral=line_neutral,
+                              min_cost_centre=min_cost_centre, keep=keep)
+        # rows the centreline puts on (or past) a track edge are off-scale like a parked path
+        off_left |= x <= e * fx
+        off_right |= x >= (wcols - e) * fx
+    else:
+        x = path * fx + fx / 2
     conf[off_left | off_right] = np.minimum(conf[off_left | off_right], 0.5)
     return dict(rows=rows, x=x, conf=conf, cost=cost, path=path, fy=fy, fx=fx,
                 off_left=off_left, off_right=off_right, path_padded=path_padded, pad=pad, row0=row0)

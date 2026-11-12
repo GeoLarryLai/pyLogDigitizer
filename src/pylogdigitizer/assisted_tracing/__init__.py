@@ -5,7 +5,7 @@
 The same API drives the web editor (``web_editor``) and notebook 01, so a session saved in the
 editor can be replayed in Python.
 
-    s = AssistedSession("example_data/.../4342.tif", curve="GR", track="track1", scale=(0, 150),
+    s = AssistedSession("example_data/.../4342_crop_3260-4770.tif", curve="GR", track="track1", scale=(0, 150),
                         backup=(150, 300), use_hatch=True, las_path=".../1042553273.las")
     s.open()                      # auto layout + OCR depth calibration (errors kept in s.errors)
     s.auto_trace()                # conventional trace of the section
@@ -69,6 +69,9 @@ class AssistedSession:
         self.excluded_ids: list[int] = []; self.anchor_window_ft: dict = {}
         self.prefer_stroke = True; self.other_ink_cost = 0.35
         self.backup_intervals: list[tuple[float, float]] = []   # sheet-row intervals read on the backup scale
+        # sheet-row intervals where this curve's ink is hidden under another curve: the trace may run along
+        # the covering curve to stay connected, but the values there are null (never another curve's reading)
+        self.hidden_intervals: list[tuple[float, float]] = []
         self.values = None; self.wraps = []
         self.history: list[str] = []
         # guided fixing: guide strokes [[(sheet_row, x_panel), ..], ..], answered check spots, per-edit change log
@@ -223,6 +226,7 @@ class AssistedSession:
             self.section = dict(kind="track", track=track, rows=[r0, r1], width=w)
             self.pan = self.L.panel(track, (r0, r1), w); self.width = w
         self.T = None; self._prob_map = None; self.anchors = []; self.excluded = []; self.backup_intervals = []; self.values = None; self.wraps = []
+        self.hidden_intervals = []
         self.grid_lattice = None; self._pan_raw = None; self.grid_fit = None
         self.strokes = []; self.decisions = []; self.change_log = []; self._undo = []; self._spots = None
         self.history.append("section")
@@ -639,7 +643,11 @@ class AssistedSession:
 
     def _set_path(self, P):
         T = self.T
-        N = ct.finish_trace(T["cost"], P, T["row0"], T["fy"], T["fx"], T["pad"], T["params"]["edge_frac"])
+        p = T["params"]
+        keep = {self._dp(r): float(x) for r, x in self.anchors} or None     # pins set x, ink or not
+        N = ct.finish_trace(T["cost"], P, T["row0"], T["fy"], T["fx"], T["pad"], p["edge_frac"],
+                            centreline=p.get("centreline", True), line_neutral=p.get("line_neutral", 0.85),
+                            min_cost_centre=p.get("min_cost_centre", True), keep=keep)
         for k_extra in ("prob_map", "ml_conf", "cost_conv", "cost_mode", "_v61", "_rel_x", "_hatch_rows", "_hatch_rows_key"):
             if k_extra in T:
                 N[k_extra] = T[k_extra]
@@ -656,6 +664,11 @@ class AssistedSession:
             for r0, r1 in self.backup_intervals:
                 m = (rows >= r0) & (rows <= r1) & ~(self.T["off_left"] | self.T["off_right"])
                 v[m] = bm(self.T["x"][m])
+            self.values = v
+        if self.hidden_intervals:
+            rows = self.T["rows"]; v = np.array(self.values, float)
+            for r0, r1 in self.hidden_intervals:
+                v[(rows >= r0) & (rows <= r1)] = np.nan
             self.values = v
 
     def set_backup_interval(self, row0: float, row1: float):
@@ -674,6 +687,23 @@ class AssistedSession:
         if self.T is not None:
             self._update_values()
 
+    def set_hidden_interval(self, row0: float, row1: float):
+        """Mark sheet rows row0..row1 as "this curve's ink is hidden under another curve here" (from
+        :func:`pylogdigitizer.line_styles.route_hidden_along_trace`, or by hand). The trace may still run
+        through them so it stays connected, but their values are null in :meth:`result` and the LAS, and
+        Trace and fix lists each one as a tricky spot."""
+        a, b = sorted((float(row0), float(row1)))
+        self.hidden_intervals = sorted(self.hidden_intervals + [(a, b)])
+        self._spots = None
+        if self.T is not None:
+            self._update_values()
+        self.history.append("hidden_interval")
+
+    def clear_hidden_intervals(self):
+        self.hidden_intervals = []; self._spots = None
+        if self.T is not None:
+            self._update_values()
+
     # ------------------------------------------------------------------ guided fixing
     # Every user edit (pin, move, stroke, answer) goes through _edit: an undo snapshot is kept and the
     # change it made to the trace is logged (progress() turns that into "more clicks still help?").
@@ -683,7 +713,7 @@ class AssistedSession:
         return dict(anchors=list(self.anchors), anchor_window_ft=dict(self.anchor_window_ft), excluded=list(self.excluded),
                     excluded_ids=list(self.excluded_ids), strokes=[list(s) for s in self.strokes],
                     decisions=[dict(d) for d in self.decisions], backup_intervals=list(self.backup_intervals),
-                    path=self.T["path_padded"].copy(), n_log=len(self.change_log), circles=list(getattr(self, "circles", [])),
+                    hidden_intervals=list(self.hidden_intervals), path=self.T["path_padded"].copy(), n_log=len(self.change_log), circles=list(getattr(self, "circles", [])),
                     nodes=list(getattr(self, "nodes", [])))
 
     def _edit(self, label: str, fn):
@@ -702,6 +732,7 @@ class AssistedSession:
     def _restore(self, snap: dict):
         for k in ("anchors", "anchor_window_ft", "excluded", "excluded_ids", "strokes", "decisions", "backup_intervals"):
             setattr(self, k, snap[k])
+        self.hidden_intervals = list(snap.get("hidden_intervals", []))
         self.circles = list(snap.get("circles", [])); self.nodes = list(snap.get("nodes", []))
         del self.change_log[snap["n_log"]:]
         self._rebuild_cost(); self._set_path(snap["path"]); self._spots = None
@@ -877,7 +908,8 @@ class AssistedSession:
     def check_spots(self, max_gap: float = 0.25, max_spots: int = 30) -> list[dict]:
         """Places worth a look, with a plain-language question and the candidates:
         'crossover' = an almost equally good other line runs elsewhere here (crossing / touching curves);
-        'wrap' = the trace leaves the track (off-scale). Answered spots are not asked again.
+        'wrap' = the trace leaves the track (off-scale); 'hidden' = a :attr:`hidden_intervals` stretch, written as
+        null (always listed until answered). Answered spots are not asked again.
         Also sets ``disagreement`` (px per DP row, 0 = no doubt) used to highlight the trace."""
         if self._spots is not None:
             return self._spots
@@ -921,6 +953,21 @@ class AssistedSession:
             spots.append(dict(kind="wrap", k0=int(a), k1=int(b), k=int(k), score=(b - a) * fy / ppf,
                               question=f"The trace runs off the {'right' if right else 'left'} edge here. Does the real curve leave the track?",
                               choices=ch))
+        rows_dp = T["rows"]
+        for r0, r1 in self.hidden_intervals:
+            ii = np.flatnonzero((rows_dp >= r0) & (rows_dp <= r1))
+            if not len(ii):
+                continue
+            a, b = int(ii[0]), int(ii[-1]) + 1
+            if seen(a, b):
+                continue
+            k = (a + b) // 2
+            spots.append(dict(kind="hidden", k0=a, k1=b, k=k, score=1e6 + (b - a) * fy / ppf,   # always listed
+                              question="This curve's ink is hidden under another curve here. The line runs along that curve "
+                                       "only to stay connected; these depths are written as null. Keep them null?",
+                              choices=[dict(id="null", label="Yes - keep null here", x_panel=float(T["x"][k]), current=True),
+                                       dict(id="trace", label="No - this ink is this curve: read the line here",
+                                            x_panel=float(T["x"][k]), current=False)]))
         spots = sorted(sorted(spots, key=lambda s: -s["score"])[:max_spots], key=lambda s: s["k"])
         for i, s in enumerate(spots):
             r = float(T["rows"][s["k"]])
@@ -937,6 +984,13 @@ class AssistedSession:
         if sp is None:
             raise SessionError(f"no spot {spot_id} (the list changed - reload it)")
         dec = dict(kind=sp["kind"], k0=sp["k0"], k1=sp["k1"], row=sp["row"], choice=choice)
+        if sp["kind"] == "hidden" and choice in ("null", "trace"):
+            def g():
+                if choice == "trace":     # the user says this ink is the curve: read the line there
+                    self.hidden_intervals = [iv for iv in self.hidden_intervals if iv[1] < sp["row0"] or iv[0] > sp["row1"]]
+                    self._update_values()
+                self.decisions.append(dec)
+            return self._edit("answer", g)
         if choice == "skip":
             return self._edit("answer", lambda: self.decisions.append(dec))
         c = next((c for c in sp["choices"] if c["id"] == choice), None)
@@ -983,6 +1037,7 @@ class AssistedSession:
         out["anchors"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.anchors]
         out["excluded"] = [[r, float(self.panel_to_sheet(r, x)), x] for r, x in self.excluded]
         out["backup_intervals"] = [list(a) for a in self.backup_intervals]
+        out["hidden_intervals"] = [list(a) for a in self.hidden_intervals]
         out["strokes"] = [[[r, float(self.panel_to_sheet(r, x))] for r, x in st] for st in self.strokes]
         return out
 
@@ -992,9 +1047,10 @@ class AssistedSession:
             return None
         from pylogdigitizer.las_export import read_las
         df = read_las(self.las_path).df()
-        if self.curve not in df.columns:
+        name = getattr(self, "ref_curve", None) or self.curve     # LAS mnemonic when it differs from the curve name
+        if name not in df.columns:
             return None
-        ref = df[self.curve].dropna(); ref = ref[ref > -999]
+        ref = df[name].dropna(); ref = ref[ref > -999]
         return ref.index.values.astype(float), ref.values.astype(float)
 
     def qc(self, plot_path: str | None = None) -> dict | None:
@@ -1036,6 +1092,7 @@ class AssistedSession:
                     auto_layout=self.auto_layout, x_range=self.x_range, rows_window=self.rows_window,
                     section=self.section, calibration=self.calibration(), anchors=[list(a) for a in self.anchors],
                     excluded=[list(a) for a in self.excluded], backup_intervals=[list(a) for a in self.backup_intervals],
+                    hidden_intervals=[list(a) for a in self.hidden_intervals],
                     strokes=[[list(p) for p in st] for st in self.strokes], decisions=self.decisions,
                     trace_kw=self.trace_kw, edge_edits=[list(e) for e in getattr(self, "edge_edits", [])],
                     circles=[list(c) for c in getattr(self, "circles", [])],
@@ -1083,6 +1140,7 @@ class AssistedSession:
             s.edge_edits = [tuple(e) for e in d.get("edge_edits") or []]
             s.set_section(track=sec["track"], rows=sec["rows"])
         s.backup_intervals = [tuple(x) for x in d.get("backup_intervals", [])]
+        s.hidden_intervals = [tuple(x) for x in d.get("hidden_intervals", [])]
         s.auto_trace(anchors_panel=d.get("anchors") or None, excluded=d.get("excluded") or None, strokes=d.get("strokes") or None)
         for r, x, rad, thr in d.get("circles") or []:            # cursor-circle re-traces, in order
             s.circle_retrace(r, x, radius_px=rad, through=thr, panel_x=True)

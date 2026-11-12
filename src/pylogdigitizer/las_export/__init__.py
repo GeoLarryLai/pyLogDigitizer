@@ -139,3 +139,28 @@ def write_las(path: str | Path, depth: np.ndarray, curves: dict[str, np.ndarray]
         if prob:
             raise LASExportError(f"{path}: written file did not read back correctly: " + "; ".join(prob))
     return Path(path)
+
+
+def common_grid(results: dict, step: float = 0.5):
+    """{name: (depth, value)} -> (depth grid, {name: values}) on one regular grid (no smoothing).
+
+    Leading / trailing depths where every curve is null are dropped. ``step`` must be 0.5 or 0.25 ft.
+    """
+    series = {k: resample(d, v, step) for k, (d, v) in results.items() if len(d) > 1}
+    if not series:
+        raise ValueError("no curves to put on a grid")
+    d0 = min(g[0] for g, _ in series.values()); d1 = max(g[-1] for g, _ in series.values())
+    grid = np.round(np.arange(np.ceil(d0 / step) * step, d1 + step / 2, step), 4)
+    curves = {}
+    for k, (g, v) in series.items():
+        out = np.full(grid.shape, np.nan)
+        idx = np.round((g - grid[0]) / step).astype(int)
+        ok = (idx >= 0) & (idx < len(grid))
+        out[idx[ok]] = v[ok]
+        curves[k] = out
+    anyv = np.any([np.isfinite(v) for v in curves.values()], axis=0)
+    if anyv.any():
+        a, b = np.flatnonzero(anyv)[[0, -1]]
+        grid = grid[a:b + 1]; curves = {k: v[a:b + 1] for k, v in curves.items()}
+    return grid, curves
+

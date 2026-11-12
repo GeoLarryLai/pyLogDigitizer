@@ -10,101 +10,126 @@
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
 
-**pyLogDigitizer** turns well-log prints into LAS files. It takes two kinds of input that share the same scale, depth, null and LAS code:
-
-1. **Inked paper scans (TIFF)** — older wells that only exist as raster scans.
-2. **Clean colour digital-print PDFs** — modern vector prints read straight from their paths with `pypdf` (no rasterizing, no scan model).
-
-Digitizing by hand is slow and hard to check. So I built a tool that does the tedious parts — finding tracks and grids, reading depth labels, separating curve ink from the grid, tracing each curve — and gives you a local browser app to review and fix every step. Overlay QA draws the grids and traces on the original scan or the real rendered PDF page so you can check alignment by eye. Curves that run off a track and come back on a backup scale are unwrapped automatically. Everything runs on your own machine and nothing is uploaded.
-
-![From a scanned paper log to a LAS curve](image/hero_scan_to_las.png)
-*The whole idea in one picture: a scanned paper log going in and a LAS curve coming out.*
+**pyLogDigitizer** turns scanned well-log prints into LAS files. It finds the tracks, grid and depth numbers, reads the curve header, tells the curves apart (by ink colour on colour scans, by line style on black-and-white scans) and traces each one. A local browser app lets you check and fix every step. Everything runs on your own computer; nothing is uploaded.
 
 ## Installation
+
+Requires Python 3.10 or newer.
+
+**From PyPI**
 
 ```bash
 pip install pylogdigitizer
 ```
+
 or from `conda-forge` repository with `conda`:
+
 ```bash
 conda install pylogdigitizer
 ```
 
-From source (builds the Rust tracer, needs a Rust toolchain):
+**From GitHub** (latest development version)
 
 ```bash
-git clone https://github.com/GeoLarryLai/pyLogDigitizer && cd pyLogDigitizer
-pip install .
+pip install git+https://github.com/GeoLarryLai/pyLogDigitizer
 ```
 
-Or `conda env create -f environment.yml && conda activate pylogdigitizer`, then `maturin develop --release`.
-Without the Rust part everything still works, only slower.
+or, from a local clone:
+
+```bash
+git clone https://github.com/GeoLarryLai/pyLogDigitizer
+cd pyLogDigitizer
+pip install -e .
+```
+
+Installing from source builds the Rust tracer and needs a Rust toolchain. Without the Rust part everything still works, only slower.
+
+## What it can do
+
+- Read colour raster scans (TIFF, JPEG or a raster PDF page) and tell the curves apart by ink colour.
+- Read black-and-white scans and tell the curves apart by line style (solid, dashed, dotted; thin or thick).
+- Find tracks, grid lines and depth numbers on their own, and read curve names and scales from the header with OCR.
+- Trace every curve and read off-scale stretches on the backup scale where they wrap back in from the other edge.
+- Check and fix everything in a local browser app.
+- Write LAS 2.0 (0.5 ft step, or 0.25 ft), plus figures and an optional CSV. Traces are dense and never smoothed.
+- Read digital-print PDFs that still carry vector curves (experimental).
+
+**Limitations**
+
+- Works best on colour scans, where the ink colour tells the curves apart.
+- Black-ink scans have higher uncertainty: there is no colour to guide which stroke belongs to which curve.
+- Needs a readable header and printed scales; otherwise names and scales are typed in the app.
+- Tested on Kansas Geological Survey (KGS) style sheets so far.
+
+## Examples
+
+**STONE 5-19 (KGS), colour raster.** A triple combo printed by plotting software and stored as pixels only, so every curve is recovered from its coloured ink.
+
+*Data: STONE 5-19, BEREXCO, LLC., API 15-055-22611, Finney County, Kansas; a crop of the colour log scan 600699.tif and its LAS, from the [KGS well page](https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1054891848).*
+
+![STONE 5-19 auto-detected tracks, grids and traces](image/ex_color_stone_detect.png)
+*STONE 5-19 (KGS), 4600–4700 ft: what pyLogDigitizer found on its own — three tracks and the depth column, grid lines, OCR'd header scales, one row per curve (GR 0–150, SP −100 to 100, CALI 6–16; ILD, ILM, SFL 0.2–200 log; NPHI, DPHI 30 to −10; PE 0–20) and eight traced curves in their print colours, next to the raw crop.*
+
+![STONE 5-19 pre-traced vs traced curves](image/ex_color_stone_trace.png)
+*STONE 5-19 (KGS): pre-traced ink (the curve's own stroke, cropped to its track) next to the trace for GR, RILD, CNPOR and DPOR, on the same track extent, printed-scale ticks and depth range.*
+
+**Challenging examples: black-and-white ink scans.** The package also does its best on older black-and-white scans, with higher uncertainty, since there is no colour to tell crossing or touching curves apart. Where one curve's dashes are hidden under another curve's stroke, those depths are written as null, never as the other curve's values.
+
+*Data: Chitwood 12, Lion Oil Co., API 15-151-10469, Pratt County, Kansas; scan 260245.tif and its LAS, from the [KGS well page](https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1001272599).*
+
+| Chitwood 12 (KGS): traced GR on the scan | Chitwood 12 (KGS): digitized GR vs the KGS LAS |
+|---|---|
+| ![Chitwood 12 scan overlay](image/overlay_scan_chitwood.png) | ![Chitwood 12 QC vs KGS LAS](image/ex_qc_chitwood.png) |
+
+*Chitwood 12 (KGS): traced GR and snapped grid lines drawn on the original scan (left), and the digitized GR against the paired KGS LAS, with a depth plot and a cross-plot (right).*
+
+*Data: USA 'A' 16, Helmerich and Payne, Inc., API 15-055-20536, Finney County, Kansas; a crop of scan 4342.tif and its LAS, from the [KGS well page](https://chasm.kgs.ku.edu/ords/qualified.well_page.DisplayWell?f_kid=1006052147).*
+
+![USA 'A' 16 line styles](image/ex_linestyle_usa.png)
+*USA 'A' 16 (KGS), 3900–3960 ft: the 1-bit scan, the curve ink labelled by line style, and the per-curve traces drawn back in their style.*
+
+![USA 'A' 16 line-style traces vs the KGS LAS](image/ex_qc_usa.png)
+*USA 'A' 16 (KGS): GR, density porosity and neutron porosity traced by line style (colour) against the KGS LAS (grey), with r and RMSE over the whole log. It works, but less exactly than on a colour scan.*
+
+All example scans and LAS files are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (details in `example_data/SOURCES.txt`). The source of this material is the Kansas Geological Survey website at http://www.kgs.ku.edu/. All Rights Reserved.
+
+## Interactive app
+
+```bash
+pylogdigitizer-app
+```
+
+Run it in a folder with your scans (the bundled examples are listed when it is run from a clone of this repository). It opens a local browser app that walks a scan through five tabs:
+
+1. **Open scan**: choose a scan and, optionally, a reference LAS.
+2. **Tracks and depth**: check the track borders, grid and depth numbers.
+3. **Curves**: the curves found by colour or line style, in colour over a greyscale scan; the OCR'd header and scales can be corrected in place.
+4. **Trace and fix**: pin, drag or re-trace the line where it is wrong.
+5. **Check and save**: the scan beside the digitized logs at the same depth; save figures, a CSV and the LAS file.
+
+![STONE 5-19 colour raster in the local browser app](image/app_demo_stone_color.gif)
+*STONE 5-19 (KGS) colour raster in the app: open the scan, check tracks and depth, look at the greyscale scan and switch on the grid and the traced curves, pick GR, check the OCR'd header and scales, trace, then check and save one LAS with every curve. The analysis wait is sped up.*
+
+## Notebooks
+
+| Notebook | What it shows |
+|---|---|
+| [01 · Conventional vs assisted](notebooks/01_conventional_vs_assisted.ipynb) | Black-and-white scans traced fully automatically, then with a few saved clicks. |
+| [02 · Kansas ML batch](notebooks/02_kansas_ml_train_batch.ipynb) | Train the optional U-Net cost map on paired KGS wells, batch-digitize and validate. |
+| [03 · Train the scan segmenter](notebooks/03_train_scan_segmenter.ipynb) | Optional retraining of the bundled ink segmenter into your own folder. |
+| [04 · Colour scan to LAS](notebooks/04_color_scan_to_las.ipynb) | STONE 5-19: ink palette, layout, header, one trace per curve, LAS. |
+| [05 · Line styles to LAS](notebooks/05_line_styles_to_las.ipynb) | USA 'A' 16: curves told apart by line style on a black-and-white scan, LAS. |
 
 ## Citation
 
 Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23832013](https://doi.org/10.5281/zenodo.23832013)
 
-## What it can do
+## References
 
-**Scan path (inked TIFF).** Find tracks and grids, deskew the sheet, OCR the depth labels and calibrate scales (including backup-scale wraparound). A small bundled ONNX segmenter separates curve ink from grid and text — default `scan_seg_v2`, with `scan_seg_overflow` opt-in when the print has overflow spikes. Meant as a general scan model; you shouldn’t need to retrain per print. Optional retraining writes to your own folder (`notebooks/03_train_scan_segmenter.ipynb`) and never overwrites the bundled default. Curves are then traced with a fast dynamic-programming tracer (Rust, with a Python fallback).
+- CIE (2004). *Colorimetry*, 3rd ed. CIE Publication 15.
+- MacQueen, J. (1967). Some methods for classification and analysis of multivariate observations. *Proceedings of the Fifth Berkeley Symposium on Mathematical Statistics and Probability* 1, 281–297.
+- Serra, J. (1982). *Image Analysis and Mathematical Morphology*. Academic Press.
 
-**Digital-print path (colour PDF).** Read vector paths with `pylogdigitizer.pdf_vector.digitize_pdf`. Auto-identifies the header, upper/lower scale sections and grids per track/column, and digitizes each curve separately. No rasterizing and no scan segmenter — the PDF already has clean coloured strokes. Public examples below include the Utah FORGE 78B-32 CBL colour digital-print.
+## License
 
-**Check by eye.** Overlay QA draws identified grid lines and traced curves on the original scan or the real rendered PDF page, so alignment is something you can see, not only a LAS score.
-
-**Fix in the local browser app.** `pylogdigitizer-app` is the place to review and correct: pin/drag anchors, re-trace inside a cursor circle, or drop a node (**D**) that snaps to potential curve ink inside an adjustable-diameter circle (or uses the clicked point) and reconnects the curve above and below instantly with no model rerun. You can also nudge track edges, set a scale from two grid lines, and click any OCR word in the header to correct it.
-
-**Out to LAS.** Writes LAS 2.0. Step 0.5 ft by default, 0.25 ft optional. Log scales, nulls where a curve is clipped by the track’s fixed scale, and backup-scale wrap / off-chart overflow (valued correctly and drawn where the backup stroke sits on the print) are all supported.
-
-On some multi-curve digital prints a GR piece may be only partly captured (FORGE porosity is the example); messy multi-curve inked scans are meant to be fixed in the editor rather than fully automatically.
-
-## Examples
-
-![Tracing in the local browser app](image/app_07_trace.png)
-*The local browser app: a traced curve laid over the scan, with tools to pin, exclude and re-trace before you export.*
-
-![Chitwood 12 QC vs KGS LAS](image/ex_qc_chitwood.png)
-*Chitwood 12 (KGS): digitized GR against the paired KGS LAS, with a depth plot and a cross-plot.*
-
-![Chitwood 12 scan overlay](image/overlay_scan_chitwood.png)
-*Chitwood 12 (KGS): traced GR and snapped grid lines drawn on the original scan, so you can check that the grid sits on the printed lines in every track.*
-
-![Utah FORGE CBL original vs extracted grids and curves](image/overlay_pdf_forge_cbl_compare.jpg)
-*Utah FORGE 78B-32 CBL: original colour print (left) → extracted grids and curves drawn back in contrasting colours (right).*
-
-Scan examples are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (`example_data/SOURCES.txt`). Colour digital-print example: the public Utah FORGE 78B-32 CBL ([GDR / OpenEI](https://gdr.openei.org/)).
-
-Notebooks: `notebooks/pdf_vector_demo.ipynb` (digital-print PDF → LAS), `notebooks/03_train_scan_segmenter.ipynb` (optional ONNX retrain into your own folder), plus `notebooks/01_conventional_vs_assisted.ipynb` and `notebooks/02_kansas_ml_train_batch.ipynb` for the scan / cost-map workflow.
-
-## Quick start
-
-A usual scan flow is: open the local app on a folder of TIFFs, step through cleanup → tracks → depths → scale → trace, fix anything that looks off, then export LAS. The same steps are available from the CLI and from Python. Digital-print PDFs go through `digitize_pdf` and write LAS directly (you can still overlay-check the page).
-
-```bash
-pylogdigitizer info example_data/USA_A_16_15-055-20536/4342.tif   # scan size and resolution
-pylogdigitizer-app .                        # the app at http://127.0.0.1 (local only); `pylogdigitizer editor .` is an alias
-```
-
-Scan path from Python:
-
-```python
-from pylogdigitizer import workflows as wf
-R = wf.digitize_curve("example_data/USA_A_16_15-055-20536/4342.tif", track="track1", scale=(0, 150),
-                      first_depth=1500, depth_range=(1500, 7030), backup=(150, 300))
-R["depth"], R["value"], R["conf"]           # then las_export.resample + write_las
-```
-
-`backup=(150, 300)` is the **backup scale**: when a curve runs off the edge of its track it is redrawn from the other edge on a second scale, and the tracer unwraps it.
-
-Digital-print PDF path (pages are 0-based; step 0.5 ft is the default):
-
-```python
-from pylogdigitizer.pdf_vector import digitize_pdf
-
-log = digitize_pdf("UniversityofUtah_Forge78B-32_6Oct21_CBL.Pdf", step=0.5)
-log.to_las("forge_cbl.las")
-```
-
-The optional ML cost map (`cost_mode="ml"` or `"blend"`) needs PyTorch and a trained checkpoint. Without them the tracer uses the conventional cost map.
-
-Third-party notices and data credits: [`NOTICE`](NOTICE).
+Code: **AGPL-3.0-or-later**. Third-party notices and data credits: [`NOTICE`](NOTICE).

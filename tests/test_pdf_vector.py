@@ -230,7 +230,7 @@ def test_overlay_on_rendered_page_grid_residual(tmp_path):
 
 
 def test_legendless_header_does_not_steal_coloured_curve_pieces():
-    """FORGE porosity: a green GR split into pieces by on-curve labels; a header without a legend
+    """A green GR split into pieces by on-curve labels; a header without a legend
     style (STIT) used to take the leftover green pieces. Taken styles are now reserved."""
     from pylogdigitizer.pdf_vector.assemble import _best_chain_for_header, _style_key
     from pylogdigitizer.pdf_vector.calibrate import CurveHeader, TrackFrame

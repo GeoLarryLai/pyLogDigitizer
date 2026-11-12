@@ -2,7 +2,7 @@
 license = "AGPL-3.0-or-later"
 publish = false
 name = "curve_tracing_rs"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Semi-automatic and ML-assisted digitization of raster scans of petrophysical well logs"
 authors = ["Larry Syu-Heng Lai"]

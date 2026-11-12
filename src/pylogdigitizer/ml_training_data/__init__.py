@@ -167,7 +167,7 @@ WELL_SPECS: list[dict[str, Any]] = [
     {"well": "GOHEEN_UNIT_1", "folder": "GOHEEN_UNIT_1_15-191-30175", "scan": "171203.tif", "las": "1042553292.las", "curve": "GR", "track": "track1", "scale": (0.0, 160.0), "backup": (160.0, 320.0), "use_hatch": True},
     {"well": "Hall_D_4", "folder": "Hall_D_4_15-051-05370", "scan": "193004.tif", "las": "1043914416.las", "curve": "GR", "track": "track1", "scale": (10.0, 110.0), "backup": (110.0, 210.0), "use_hatch": False},
     {"well": "MAKEMSON_A_1", "folder": "MAKEMSON_A_1_15-081-20018", "scan": "225992.tif", "las": "1044080517.las", "curve": "GR", "track": "track1", "scale": (0.0, 120.0), "use_hatch": False},
-    {"well": "Chitwood_12", "folder": "Chitwood_12_15-151-10469", "scan": "260245.tif", "las": "1044194859.las", "curve": "GR:2", "track": "track1", "scale": (0.0, 100.0), "use_hatch": False},
+    {"well": "Chitwood_12", "folder": "Chitwood_12_15-151-10469", "scan": "260245.tif", "las": "1044194859.las", "curve": "GR:2", "track": "track1", "scale": (0.0, 160.0), "backup": (160.0, 320.0), "use_hatch": False},
     {"well": "Minzer_1", "folder": "Minzer_1_15-077-30177", "scan": "171665.tif", "las": "1044076084.las", "curve": "GR", "track": "track1", "scale": (0.0, 100.0), "use_hatch": False},
 ]
 
@@ -405,29 +405,33 @@ def build_well_record_from_scan(
     fx: int = 2,
 ) -> dict[str, Any]:
     """Extract DP-resolution cost, grid-cleaned ink masks, and aligned LAS reference trajectory for one well."""
-    from .. import las_export, ml_models, quality_control as qc, workflows as wf
+    from .. import las_export, ml_models, qc_compare as qc, workflows as wf
 
     w = spec["well"]
     folder = spec.get("folder", w)
     scan_p = Path(data_root) / folder / spec["scan"]
     las_p = Path(data_root) / folder / spec["las"]
-    res = wf.digitize_curve(
-        scan_p,
-        curve=spec.get("curve", "GR"),
+    kw = dict(
         track=spec.get("track", "track1"),
         scale=tuple(spec.get("scale", (0.0, 150.0))),
         backup=tuple(spec["backup"]) if spec.get("backup") else None,
         use_hatch=bool(spec.get("use_hatch", True)),
         first_depth=spec.get("first_depth"),
+        section=spec.get("section"),
         cost_mode="conventional",
         fy=fy,
         fx=fx,
     )
+    try:
+        res = wf.digitize_curve(scan_p, **kw)
+    except wf.SectionChoiceNeeded as e:     # several log sections: train on the longest one
+        kw["section"] = max(e.sections, key=lambda c: c["base"] - c["top"])["index"]
+        res = wf.digitize_curve(scan_p, **kw)
     pan = res["panel"]
     T = res["trace"]
     cost = T["cost_conv"]
     ic, ir = ml_models.clean_dp_ink(pan, cost, fy=fy, fx=fx)
-    tx_conv = np.clip(np.round(T["x_panel"] / fx).astype(np.int32), 0, cost.shape[1] - 1)
+    tx_conv = np.clip(np.round(np.asarray(T["x"], float) / fx).astype(np.int32), 0, cost.shape[1] - 1)
 
     df = las_export.read_las(las_p).df()
     curve = spec.get("curve", "GR")

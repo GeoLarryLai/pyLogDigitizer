@@ -20,7 +20,6 @@ Pipeline:
 from __future__ import annotations
 
 import difflib
-import os
 import re
 import time
 from pathlib import Path
@@ -29,9 +28,12 @@ import numpy as np
 
 from pylogdigitizer.header_ocr.mnemonics import CURVES, UNITS, LAS_UNIT_ALIASES, COMPATIBLE_UNITS
 
+from pylogdigitizer.header_ocr.from_lines import printed_name, propose_curves_from_lines, apply_curve_fixes, merge_backup_rows
+
 __all__ = ["ocr_region", "propose_curves", "lookup_mnemonic", "match_mnemonic", "parse_unit",
            "parse_number", "fit_scale", "find_header_box", "propose_header", "to_runs",
-           "normalize_las_unit", "units_match", "REVIEW_THRESHOLD"]
+           "normalize_las_unit", "units_match", "REVIEW_THRESHOLD",
+           "printed_name", "propose_curves_from_lines", "apply_curve_fixes", "merge_backup_rows"]
 
 REVIEW_THRESHOLD = 0.75          # field confidence below this -> needs_review
 RAPID_VARIANTS = ((1.0, 1.0), (1.5, 1.0))   # RapidOCR header passes (resize, line-removal factor), merged
@@ -810,7 +812,8 @@ def _load_top(path, max_rows: int = 20000):
 
 
 def propose_header(source, layout=None, backend="auto", max_workers: int = 4,
-                   max_rows: int = 20000) -> dict:
+                   max_rows: int = 20000, parse: str = "default",
+                   labels=None, label_names=None) -> dict:
     """OCR the track headers of a scan and return proposals (nothing is applied).
 
     source: scan path (or a bool ink array). layout: optional workflows.Layout to reuse its deskewed
@@ -862,11 +865,16 @@ def propose_header(source, layout=None, backend="auto", max_workers: int = 4,
                               words=[dict(w, x0=w["x0"] + x_off, x1=w["x1"] + x_off, y0=w["y0"] + y_off,
                                           y1=w["y1"] + y_off) for w in words])
         flat += cur
-    return dict(scan=str(source) if not isinstance(source, np.ndarray) else None,
+    result = dict(scan=str(source) if not isinstance(source, np.ndarray) else None,
                 header_rows=(top + y_off, bottom + y_off), probe_row=probe + y_off, tracks=out_tracks,
                 curves=flat, runtime_s=round(time.time() - t0, 3),
                 backend=backend if isinstance(backend, str) else getattr(backend, "__name__", "custom"),
-                status="proposed")
+                status="proposed", parse="default")
+    if parse == "lines":
+        line_rows = propose_curves_from_lines(result["tracks"], labels, label_names)
+        result["line_curves"] = line_rows
+        result["parse"] = "lines"
+    return result
 
 
 def apply_word_edits(header: dict, track: str, edits: list[dict]) -> dict:

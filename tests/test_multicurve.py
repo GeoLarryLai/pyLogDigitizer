@@ -68,7 +68,7 @@ def test_app_candidate_picker(tmp_path):
     d = tmp_path / "example_data" / "TWO_1"; d.mkdir(parents=True)
     Image.fromarray(np.where(ink, 0, 255).astype(np.uint8)).save(d / "two.tif")
     H, W = ink.shape
-    app = create_app(str(tmp_path)); app.state.testing = True; c = TestClient(app)
+    app = create_app(str(tmp_path)); app.state.testing = True; c = TestClient(app, base_url="http://127.0.0.1")
     def wait(r):
         assert r.status_code == 200, r.text
         jid = r.json()["job"]["id"]

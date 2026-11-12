@@ -1,64 +1,181 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Larry Syu-Heng Lai
-// pyLogDigitizer app: the nine steps of notebook 01. Viewer coordinates = sheet pixels of the
-// deskewed working sheet. Editing actions call the editor API (/core/api/sessions/..);
-// long tasks are app jobs (/app/api/..) with n / N progress. Files are written only in step 9.
+// the scan is always world item 0; the highlight overlay is item 1 with the same size
+const BASE = () => viewer.world.getItemAt(0);
+// pyLogDigitizer app: five tabs (Open scan · Tracks and depth · Curves · Trace and fix · Check and save).
+// Viewer coordinates = sheet pixels. Every curve has its own working image and session on the server;
+// the selected curve's session answers the editor API (/core/api/sessions/..). Long tasks are app jobs
+// (/app/api/..) with n / N progress. Files are written only in Check and save.
 "use strict";
 const {$, api, runJob, toast, help} = Shell;
 const TAB10 = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"];
-const STEPS = [
-  {id: "load", title: "Open a scan"}, {id: "dsection", title: "Which depth section?", hidden: true}, {id: "deskew", title: "Check it's straight"}, {id: "section", title: "Check the tracks"},
-  {id: "header", title: "Check the curve names"}, {id: "depth", title: "Check the depth numbers"}, {id: "scale", title: "Check the scale"},
-  {id: "trace", title: "Fix the trace"}, {id: "checks", title: "Confirm the tricky spots"}, {id: "qc", title: "Compare with reference"}, {id: "export", title: "Save LAS file"}];
-let CHK = null, CUR = null, CPOS = 0, STROKE = [], DRAG = null, PROG = null;
-let INFO = null, SID = null, ST = null, LAY = null, OV = null, HDR = null, viewer = null, mode = "pan", pts = [], STEP = "load";
-let LBL = [], LBLsel = new Set(), HSEL = new Set();
+const STEPS = [{id: "open", title: "Open scan"}, {id: "tracks", title: "Tracks and depth"}, {id: "curves", title: "Curves"},
+  {id: "trace", title: "Trace and fix"}, {id: "save", title: "Check and save"}];
+let CHK = null, CUR = null, CPOS = 0, STROKE = [], DRAG = null, PROG = null, NODE = null, HOVER = null, HW = [];
+let INFO = null, SID = null, ST = null, LAY = null, OV = null, HDR = null, viewer = null, mode = "pan", pts = [], STEP = "open";
+let LBL = [], LBLsel = new Set(), CURV = null, TR = null, GRID = null, HLITEM = null;
+let CVIEW = "curves", HLN = null, LOGS = null, LOGSEL = null, SHOWIMG = true;   // Curves view, header lines, Check and save plot
+const GREY = () => ["tracks", "curves", "trace"].includes(STEP);              // working tabs show the scan in greyscale
+const LAYERS = {scan: true, hl: false, grid: true, traces: true};
 const fmt = (v, d = 1) => v == null || !isFinite(v) ? "–" : (+v).toFixed(d);
 const E = p => `/core/api/sessions/${SID}${p}`, A = p => `/app/api/${SID}${p}`;
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const off = f => f && !f.ok ? `disabled title="${esc(f.hint)}"` : "";
 const hint = f => f && !f.ok ? `<div class="hint">${esc(f.hint)}</div>` : "";
-function engineSel() {                      // OCR status line: RapidOCR, or the install hint when it is missing
-  const o = INFO.features.ocr;
-  return o.ok ? `<div class="hint">OCR: RapidOCR</div>` : `<div class="hint">OCR is not installed - ${esc(o.hint || "")}. Type the values by hand.</div>`;
-}
-function bindEngine() {}
 const KEYS = (...r) => `<div class="controls">${r.map(x => `<div>${x}</div>`).join("")}</div>`;
 const NAV = "<kbd>drag</kbd> pan · <kbd>wheel</kbd> zoom · <kbd>double-click</kbd> zoom in · <kbd>Esc</kbd> back to pan";
+const active = () => (CURV?.curves || []).find(c => c.id === CURV.active);
+const ocrLine = () => INFO.features.ocr.ok ? `<div class="hint">OCR: RapidOCR</div>` : `<div class="hint">OCR is not installed - ${esc(INFO.features.ocr.hint || "")}. Type the values by hand.</div>`;
 
-// ------------------------------------------------------------------ state + viewer
+// ------------------------------------------------------------------ state + viewer + layers
 async function refresh(over = true) {
   ST = await api("GET", A("/state")); $("undoBtn").disabled = !ST.undo.length;
   $("undoBtn").title = ST.undo.length ? `Undo: ${ST.undo[ST.undo.length - 1]} (Z)` : "nothing to undo";
-  $("doc").textContent = `${ST.well} · ${ST.scan.split("/").pop()} · ${ST.curve}` + (ST.depth_top_base ? ` · ${fmt(ST.depth_top_base[0], 0)}–${fmt(ST.depth_top_base[1], 0)} ft` : "");
-  if (over) { OV = await api("GET", E("/overlay")); draw(); }
+  $("doc").textContent = `${ST.well} · ${ST.scan_name || ST.scan.split("/").pop()} · ${ST.n_curves} curve(s)` + (ST.depth_top_base ? ` · ${fmt(ST.depth_top_base[0], 0)}–${fmt(ST.depth_top_base[1], 0)} ft` : "");
+  if (over) { OV = await api("GET", E("/overlay")); TR = await api("GET", A("/traces")); draw(); }
 }
+async function loadCurves() { CURV = await api("GET", A("/curves")); renderCurvePanel(); }
 function openViewer() {
-  if (viewer) viewer.destroy(); $("empty").hidden = true;
+  if (viewer) viewer.destroy(); $("empty").hidden = true; HLITEM = null;
   viewer = OpenSeadragon({id: "viewer", tileSources: E("/image.dzi"), showNavigationControl: false, prefixUrl: "",
     gestureSettingsMouse: {clickToZoom: false, dblClickToZoom: true}, maxZoomPixelRatio: 4, minZoomImageRatio: 0.3, visibilityRatio: 0.2});
   viewer.addHandler("canvas-click", onClick); viewer.addHandler("canvas-press", onPress); viewer.addHandler("canvas-drag", onDrag); viewer.addHandler("canvas-release", onRelease);
-  new OpenSeadragon.MouseTracker({element: viewer.canvas, moveHandler: e => { if (mode !== "circle" && mode !== "node") return; const ip = viewer.viewport.viewerElementToImageCoordinates(e.position); HOVER = {row: ip.y, x: ip.x}; drawSoon(); },
-    scrollHandler: e => { if ((mode !== "circle" && mode !== "node") || !e.originalEvent.shiftKey) return; const el = $("circR"); if (!el) return; el.value = Math.max(10, Math.min(600, +el.value * (e.scroll > 0 ? 1.15 : 1 / 1.15))) | 0; e.preventDefault = true; drawSoon(); }}); for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
-  return new Promise(r => viewer.addOnceHandler("open", () => { focusStep(); r(); }));
+  new OpenSeadragon.MouseTracker({element: viewer.canvas, moveHandler: e => { if (mode !== "circle" && mode !== "node") return; const ip = BASE().viewerElementToImageCoordinates(e.position); HOVER = {row: ip.y, x: ip.x}; drawSoon(); },
+    scrollHandler: e => { if ((mode !== "circle" && mode !== "node") || !e.originalEvent.shiftKey) return; const el = $("circR"); if (!el) return; el.value = Math.max(10, Math.min(600, +el.value * (e.scroll > 0 ? 1.15 : 1 / 1.15))) | 0; e.preventDefault = true; drawSoon(); }});
+  for (const ev of ["update-viewport", "animation", "animation-finish", "resize", "tile-drawn"]) viewer.addHandler(ev, drawSoon);
+  $("layers").hidden = false;
+  $("logPane").onwheel = ev => { ev.preventDefault(); const b = viewer.viewport.getBounds(); viewer.viewport.panBy(new OpenSeadragon.Point(0, ev.deltaY / $("logPane").clientHeight * b.height)); };
+  return new Promise(r => viewer.addOnceHandler("open", () => { applyLayers(); loadHighlight(); focusStep(); r(); }));
 }
+function loadHighlight() {                 // highlight layer: the selected curve's own ink, as a tiled overlay
+  if (!viewer || !CURV) return;
+  if (HLITEM) { viewer.world.removeItem(HLITEM); HLITEM = null; }
+  viewer.addTiledImage({tileSource: A(`/highlight/${CURV.active}.dzi`), opacity: LAYERS.hl ? 1 : 0, success: ev => { HLITEM = ev.item; applyLayers(); }});
+}
+function applyLayers() {   // every layer state looks different: scan full, washed under the grid, dimmed under the highlight
+  for (const [k, id] of [["scan", "lyScan"], ["hl", "lyHl"], ["grid", "lyGrid"], ["traces", "lyTr"]]) if ($(id)) $(id).checked = LAYERS[k];
+  const base = viewer?.world.getItemAt(0), save = STEP === "save";
+  if (base) base.setOpacity(save ? (SHOWIMG ? 1 : 0) : !LAYERS.scan ? 0 : LAYERS.hl ? 0.3 : LAYERS.grid ? 0.8 : 1);
+  if (HLITEM) HLITEM.setOpacity(LAYERS.hl && !save ? 1 : 0);
+  const m = $("main"); for (const k of Object.keys(LAYERS)) m.classList.toggle("ly-" + k, !!LAYERS[k]);
+  const parts = [LAYERS.scan && (LAYERS.hl ? "scan dimmed" : GREY() ? "scan in greyscale" : "scan in its own colours"),
+    LAYERS.hl && "selected curve ink (dark)", LAYERS.grid && "tracks and grid (teal)", LAYERS.traces && "traced curves (colour)"].filter(Boolean);
+  $("lyState").textContent = parts.length ? parts.join(" + ") : "nothing shown";
+  draw();
+}
+for (const [k, id] of [["scan", "lyScan"], ["hl", "lyHl"], ["grid", "lyGrid"], ["traces", "lyTr"]]) $(id).onchange = () => { LAYERS[k] = $(id).checked; applyLayers(); };
 function fitRows(r0, r1, x0 = 0, x1 = ST.width) {
-  if (viewer) viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(x0, r0, x1 - x0, Math.max(50, r1 - r0)), true);
+  if (viewer && BASE()) viewer.viewport.fitBounds(BASE().imageToViewportRectangle(x0, r0, x1 - x0, Math.max(50, r1 - r0)), true);
 }
 function focusStep() {
-  if (!viewer || !ST || STEP === "checks") return;
+  if (!viewer || !ST) return;
   const sec = ST.section, w = ST.width;
-  if (STEP === "deskew" || STEP === "dsection") viewer.viewport.goHome(true);
-  else if (STEP === "header") fitRows(0, Math.max(LAY?.probe_row || 1500, 800) + 200);
-  else if (STEP === "depth" && LAY?.labels?.length) { const r = LAY.labels[0][0]; fitRows(r - 300, r + 1.4 * w); }
+  if (STEP === "open") viewer.viewport.goHome(true);
+  else if (STEP === "tracks" && LAY?.labels?.length) { const r = LAY.labels[0][0]; fitRows(Math.max(0, r - 0.9 * w), r + 0.9 * w); }
+  else if (STEP === "curves" && CVIEW === "header" && HLN?.strip?.[1]) fitRows(0, HLN.strip[1] * 2.7);
+  else if (STEP === "curves" && sec) fitRows(Math.max(0, sec.rows[0] - 0.25 * w), sec.rows[0] + 0.9 * w);
+  else if (STEP === "save" && sec) fitRows(sec.rows[0] - 0.12 * w, sec.rows[0] + 1.6 * w);
   else if (sec) fitRows(sec.rows[0], sec.rows[0] + 1.3 * w);
   else viewer.viewport.goHome(true);
 }
 let _drawReq = 0;
 function drawSoon() { if (!_drawReq) _drawReq = requestAnimationFrame(() => { _drawReq = 0; draw(); }); }
-let HOVER = null, HW = [];
+function poly(c, P, pts, vis) { c.beginPath(); let f = true; for (const [r, x] of pts) { if (!vis(r)) { f = true; continue; } const p = P(x, r); f ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y); f = false; } c.stroke(); }
+function draw() {
+  const cv = $("ov"), c = cv.getContext("2d"); cv.width = cv.clientWidth; cv.height = cv.clientHeight; c.clearRect(0, 0, cv.width, cv.height);
+  if (!viewer || !viewer.world.getItemAt(0) || !ST) return;
+  const P = (x, y) => BASE().imageToViewerElementCoordinates(new OpenSeadragon.Point(x, y));
+  const top = BASE().viewerElementToImageCoordinates(new OpenSeadragon.Point(0, 0)).y;
+  const bot = BASE().viewerElementToImageCoordinates(new OpenSeadragon.Point(0, cv.height)).y;
+  const vis = r => r > top - 200 && r < bot + 200;
+  if (STEP === "open" && (ST.depth_sections || []).length > 1) {        // log sections: numbered bands to click
+    ST.depth_sections.forEach((d, i) => { const a = P(0, d.row0), b = P(ST.width, d.row1), cur = ST.depth_section === d.index;
+      c.fillStyle = cur ? "rgba(37,99,235,.22)" : `${TAB10[i % 10]}33`; c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+      c.strokeStyle = cur ? "#2563eb" : TAB10[i % 10]; c.lineWidth = cur ? 3 : 2; c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+      c.font = "bold 16px -apple-system,sans-serif"; c.fillStyle = c.strokeStyle; c.fillText(`Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft`, a.x + 8, Math.max(a.y, 0) + 20); });
+  }
+  if (STEP === "save") { drawLogs(); return; }                           // Check and save: the scan as printed, logs on the right
+  const hdrView = STEP === "curves" && CVIEW === "header";
+  if (hdrView) { drawHeaderView(c, P, cv); return; }
+  if (LAYERS.grid) {                                                     // grid / tracks layer (teal)
+    if (GRID?.available) {
+      c.strokeStyle = "rgba(13,148,136,.5)"; c.lineWidth = 1;
+      for (const xs of Object.values(GRID.v)) for (const x of xs) { const a = P(x, Math.max(top, 0)), b = P(x, bot); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }
+      const step = Math.max(1, Math.ceil(GRID.h.length / 400 * (bot - top) / ST.height));
+      GRID.h.forEach((r, i) => { if (!vis(r) || i % step) return; const a = P(GRID.tracks[0]?.left ?? 0, r), b = P(GRID.tracks[GRID.tracks.length - 1]?.right ?? ST.width, r);
+        c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); });
+    }
+    if (LAY?.available) { c.lineWidth = 3; Object.values(LAY.edges).forEach(pl => { c.strokeStyle = "rgba(15,118,110,.95)"; poly(c, P, pl, vis); }); }
+    (GRID?.tracks || []).forEach(t => { const a = P((t.left + t.right) / 2, 0), w = 64;   // track names on a teal tab at the top
+      c.fillStyle = "rgba(15,118,110,.92)"; c.fillRect(a.x - w / 2, 40, w, 18); c.fillStyle = "#fff"; c.font = "bold 11px -apple-system,sans-serif";
+      c.textAlign = "center"; c.fillText(t.name, a.x, 53); c.textAlign = "left"; });
+    if (LAY?.available) { c.font = "12px -apple-system,sans-serif";
+      LBL.forEach((l, i) => { if (!vis(l.row)) return; const dx = (GRID?.tracks || []).length > 1 ? (GRID.tracks[0].right + GRID.tracks[1].left) / 2 : ST.width / 2;
+        const a = P(dx - 60, l.row), b = P(dx + 60, l.row);
+        c.strokeStyle = LBLsel.has(i) ? "#2563eb" : "#d62728"; c.lineWidth = 3; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+        if (STEP === "tracks") { c.fillStyle = l.value == null ? "#d97706" : "#b91c1c"; c.font = "bold 13px -apple-system,sans-serif"; c.fillText(l.value == null ? "?" : l.value + " ft", b.x + 6, b.y + 4); } });
+    }
+  }
+  if (STEP === "curves" && HDR && LAYERS.grid) drawWords(c, P);
+  if (LAYERS.traces && TR) {                                              // traced curves layer: every curve in its colour
+    const hl = LAYERS.hl;                                                   // with the dark ink highlight on, other traces step back
+    for (const t of TR.traces) { const act = t.id === TR.active, lw = act ? (hl ? 1.8 : 3) : 2.2;
+      if (!hl) { c.save(); c.strokeStyle = "rgba(255,255,255,.9)"; c.lineWidth = lw + 3; poly(c, P, t.trace, vis); c.restore(); }   // halo on the grey scan
+      c.strokeStyle = t.color; c.globalAlpha = act ? 1 : (hl ? 0.18 : 0.95); c.lineWidth = lw; poly(c, P, t.trace, vis); }
+    c.globalAlpha = 1;
+  }
+  if (STEP === "trace" && OV) drawFix(c, P, vis, cv);
+  drawCircle(c, P);
+  c.strokeStyle = "#2563eb"; c.lineWidth = 2; for (const q of pts) { const p = P(q[1], q[0]); c.strokeRect(p.x - 5, p.y - 5, 10, 10); }
+}
+function drawHeaderView(c, P, cv) {      // Curves > Header & scales: body covered, header lines boxed, confidence bars
+  if (!HLN?.strip?.[1]) return;
+  const yb = Math.max(0, P(0, HLN.strip[1] + 6).y);
+  c.fillStyle = "rgba(30,41,59,.66)"; c.fillRect(0, yb, cv.width, cv.height - yb);
+  for (const L of HLN.lines) { const a = P(L.x0 - 4, L.y0 - 3), b = P(L.x1 + 4, L.y1 + 3), cu = (CURV?.curves || []).find(x => x.id === L.curve);
+    if (cu) { c.globalAlpha = 0.14; c.fillStyle = cu.color; c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); c.globalAlpha = 1; c.strokeStyle = cu.color; c.lineWidth = 2.5; }
+    else { c.strokeStyle = "rgba(100,116,139,.8)"; c.lineWidth = 1; c.setLineDash([4, 3]); }
+    c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); c.setLineDash([]);
+    c.fillStyle = L.conf >= 90 ? "#16a34a" : L.conf >= 70 ? "#d97706" : "#dc2626"; c.fillRect(a.x, b.y + 1, (b.x - a.x) * Math.max(0.05, L.conf / 100), 3); }
+  drawWords(c, P); placePops(P, yb);
+  const m = $("main").getBoundingClientRect();
+  document.querySelectorAll("#scalePops .pop").forEach(el => { const L = HLN.lines.find(q => q.curve === el.dataset.id); if (!L) return;
+    const a = P((L.x0 + L.x1) / 2, L.y1 + 4), r = el.getBoundingClientRect();
+    c.strokeStyle = el.dataset.color; c.lineWidth = 2; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(r.left - m.left + r.width / 2, r.top - m.top); c.stroke(); });
+}
+function placePops(P, yb) {               // scale pop-ups under their header lines, spread so they never overlap
+  const els = [...document.querySelectorAll("#scalePops .pop")], W = $("main").clientWidth; let right = 8;
+  els.map(el => { const L = HLN.lines.find(q => q.curve === el.dataset.id); return [L ? P((L.x0 + L.x1) / 2, 0).x : 0, el]; })
+    .sort((a, b) => a[0] - b[0]).forEach(([x, el]) => { const w = el.offsetWidth || 230, l = Math.min(Math.max(right, x - w / 2), W - w - 8);
+      el.style.left = l + "px"; el.style.top = Math.min(yb + 26, $("main").clientHeight - el.offsetHeight - 8) + "px"; right = l + w + 12; });
+}
+function drawLogs() {                     // Check and save: every chosen log in its track, row for row with the scan on the left
+  const pane = $("logPane"); if (pane.hidden || !LOGS || !viewer || !BASE()) return;
+  const cv = $("logCv"), c = cv.getContext("2d"); cv.width = cv.clientWidth; cv.height = cv.clientHeight; c.clearRect(0, 0, cv.width, cv.height);
+  const Y = r => BASE().imageToViewerElementCoordinates(new OpenSeadragon.Point(0, r)).y;
+  const tr = LOGS.tracks.length ? LOGS.tracks : [{name: null, left: 0, right: LOGS.width}], sel = LOGS.curves.filter(q => LOGSEL.has(q.id));
+  const x0 = Math.min(...tr.map(t => t.left)), x1 = Math.max(...tr.map(t => t.right)), ml = 50, mr = 10, X = v => ml + (v - x0) / (x1 - x0) * (cv.width - ml - mr);
+  const nmax = Math.max(1, ...tr.map(t => sel.filter(q => q.track === t.name).length)), HD = 8 + 15 * nmax;
+  const ln = (a, b, p, q) => { c.beginPath(); c.moveTo(a, b); c.lineTo(p, q); c.stroke(); };
+  c.font = "11px -apple-system,sans-serif"; c.textAlign = "right";
+  for (const [d, r, major] of LOGS.ticks) { const y = Y(r); if (y < HD || y > cv.height) continue;
+    c.strokeStyle = major ? "#94a3b8" : "#e2e8f0"; c.lineWidth = major ? 1 : 0.6; ln(ml, y, cv.width - mr, y);
+    if (major) { c.fillStyle = "#334155"; c.fillText(String(d), ml - 6, y + 4); } }
+  c.strokeStyle = "#475569"; c.lineWidth = 1; tr.forEach(t => { ln(X(t.left), HD, X(t.left), cv.height); ln(X(t.right), HD, X(t.right), cv.height); });
+  for (const q of sel) { const t = tr.find(t => t.name === q.track) || tr[0]; let pen = false;
+    c.strokeStyle = q.color; c.lineWidth = 1.4; c.beginPath();
+    for (let i = 0; i < q.row.length; i++) { const f = q.frac[i], y = Y(q.row[i]);
+      if (f == null || f < -0.01 || f > 1.01 || y < HD || y > cv.height) { pen = false; continue; }
+      const x = X(t.left + f * (t.right - t.left)); pen ? c.lineTo(x, y) : c.moveTo(x, y); pen = true; }
+    c.stroke(); }
+  c.fillStyle = "#fff"; c.fillRect(0, 0, cv.width, HD); c.strokeStyle = "#cbd5e1"; ln(0, HD, cv.width, HD);
+  tr.forEach(t => sel.filter(q => q.track === t.name).forEach((q, i) => { const y = 15 + 15 * i, a = X(t.left), b = X(t.right);
+    c.fillStyle = q.color; c.font = "bold 11px -apple-system,sans-serif"; c.textAlign = "center"; c.fillText(q.name, (a + b) / 2, y);
+    c.font = "10px -apple-system,sans-serif"; c.textAlign = "left"; c.fillText(String(q.left), a + 3, y); c.textAlign = "right"; c.fillText(String(q.right), b - 3, y); }));
+  c.textAlign = "left";
+}
 function drawWords(c, P) {
-  if (STEP !== "header") return; c.lineWidth = 1.5;
+  if (mode !== "word") return; c.lineWidth = 1.5;
   HW.forEach(w => { const a = P(w.x0, w.y0), b = P(w.x1, w.y1);
     c.strokeStyle = w.corrected ? "#16a34a" : (w.conf < 60 ? "#d97706" : "rgba(37,99,235,.7)"); c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); });
 }
@@ -66,93 +183,61 @@ function drawCircle(c, P) {
   if ((mode !== "circle" && mode !== "node") || !HOVER) return; const r = +($("circR")?.value || 60), a = P(HOVER.x, HOVER.row), b = P(HOVER.x + r, HOVER.row);
   c.strokeStyle = "rgba(217,119,6,.9)"; c.lineWidth = 2; c.setLineDash([5, 4]); c.beginPath(); c.arc(a.x, a.y, Math.abs(b.x - a.x), 0, 2 * Math.PI); c.stroke(); c.setLineDash([]);
 }
-function draw() {
-  const cv = $("ov"), c = cv.getContext("2d"); cv.width = cv.clientWidth; cv.height = cv.clientHeight; c.clearRect(0, 0, cv.width, cv.height);
-  if (!viewer || !viewer.world.getItemAt(0) || !ST) return;
-  const P = (x, y) => viewer.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(x, y));
-  const top = viewer.viewport.viewerElementToImageCoordinates(new OpenSeadragon.Point(0, 0)).y;
-  const bot = viewer.viewport.viewerElementToImageCoordinates(new OpenSeadragon.Point(0, cv.height)).y;
-  const vis = r => r > top - 200 && r < bot + 200;
-  if (["section", "deskew", "header"].includes(STEP) && LAY?.available) {     // followed boundaries (notebook colours)
-    Object.values(LAY.edges).forEach((pl, j) => { c.strokeStyle = TAB10[j % 10]; c.lineWidth = 1.5; c.beginPath();
-      pl.forEach(([r, x], i) => { const p = P(x, r); i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y); }); c.stroke(); });
-  }
-  drawWords(c, P);
-  if (["section", "depth"].includes(STEP)) {                                    // depth labels: red ticks
-    c.font = "12px -apple-system,sans-serif";
-    LBL.forEach((l, i) => { if (!vis(l.row)) return; const a = P(ST.width * 0.4, l.row), b = P(ST.width * 0.6, l.row);
-      c.strokeStyle = LBLsel.has(i) ? "#2563eb" : "#d62728"; c.lineWidth = 3; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
-      if (STEP === "depth") { c.fillStyle = l.value == null ? "#d97706" : "#d62728"; c.fillText(l.value == null ? "?" : l.value, b.x + 6, b.y + 4); } });
-  }
-  if (STEP === "dsection") {                                                   // log sections: numbered bands to click
-    (ST.depth_sections || []).forEach((d, i) => { const a = P(0, d.row0), b = P(ST.width, d.row1), cur = ST.depth_section === d.index;
-      c.fillStyle = cur ? "rgba(37,99,235,.22)" : `${TAB10[i % 10]}33`; c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
-      c.strokeStyle = cur ? "#2563eb" : TAB10[i % 10]; c.lineWidth = cur ? 3 : 2; c.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
-      c.font = "bold 16px -apple-system,sans-serif"; c.fillStyle = c.strokeStyle; c.fillText(`Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft`, a.x + 8, Math.max(a.y, 0) + 20); });
-    return;
-  }
-  drawCircle(c, P);
-  const sec = OV?.section;
-  if (sec) { c.strokeStyle = "rgba(37,99,235,.8)"; c.lineWidth = 1.5; c.setLineDash([6, 4]); const a = P(0, sec.rows[0]), b = P(0, sec.rows[1]);
-    c.beginPath(); c.moveTo(0, a.y); c.lineTo(cv.width, a.y); c.moveTo(0, b.y); c.lineTo(cv.width, b.y); c.stroke();
-    if (sec.kind === "box") { const p0 = P(sec.x0, sec.rows[0]), p1 = P(sec.x1, sec.rows[1]); c.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y); }
-    c.setLineDash([]); }
-  if (["scale", "trace", "checks", "qc", "export"].includes(STEP) && OV) {     // trace: red, off-scale orange, "could go another way" yellow halo
-    const dis = (STEP === "trace" || STEP === "checks") ? (CHK?.disagree || []) : [], inDis = r => dis.some(([a, b]) => r >= a && r <= b);
-    if (["trace", "checks", "qc", "export"].includes(STEP)) for (const cd of (OV.candidates || [])) { if (cd.picked) continue;    // other curves of the track: own colour, dashed
-      c.strokeStyle = CAND_COL[cd.index % CAND_COL.length]; c.globalAlpha = 0.7; c.lineWidth = 2; c.setLineDash([7, 5]); c.beginPath(); let f = true;
-      for (const [r, x] of cd.trace) { if (!vis(r)) { f = true; continue; } const p = P(x, r); f ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y); f = false; }
-      c.stroke(); c.setLineDash([]); c.globalAlpha = 1; }
-    let prev = null;
-    for (const [r, x, o] of OV.trace) { if (!vis(r)) { prev = null; continue; } const p = P(x, r);
-      if (prev) { if (inDis(r)) { c.strokeStyle = "rgba(250,204,21,.55)"; c.lineWidth = 9; c.beginPath(); c.moveTo(prev.x, prev.y); c.lineTo(p.x, p.y); c.stroke(); }
-        c.lineWidth = 2; c.strokeStyle = o ? "rgba(255,140,0,.95)" : "rgba(214,39,40,.9)"; c.beginPath(); c.moveTo(prev.x, prev.y); c.lineTo(p.x, p.y); c.stroke(); }
-      prev = p; }
-    c.strokeStyle = "rgba(37,99,235,.85)"; c.lineWidth = 5; c.lineCap = "round";
-    for (const st of (OV.strokes || []).concat(STROKE.length ? [STROKE] : [])) { c.beginPath(); st.forEach(([r, x], i) => { const p = P(x, r); i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y); }); c.stroke(); }
-    c.lineCap = "butt";
-    if (STEP === "checks" && CUR) { const sp = CUR, cols = ["#2563eb", "#f97316", "#16a34a"];
-      const a = P(0, sp.row0), b = P(0, sp.row1); c.fillStyle = "rgba(250,204,21,.12)"; c.fillRect(0, a.y, cv.width, b.y - a.y);
-      sp.choices.forEach((ch, i) => { const p = P(ch.x, sp.row); c.strokeStyle = cols[i % 3]; c.lineWidth = 4; c.beginPath(); c.arc(p.x, p.y, 16, 0, 7); c.stroke();
-        c.font = "bold 15px -apple-system,sans-serif"; c.fillStyle = cols[i % 3]; c.fillText(String(i + 1), p.x - 4, p.y - 22); }); }
-    c.fillStyle = "rgba(255,140,0,.15)"; for (const [a, b] of OV.backup_intervals || []) { const p0 = P(0, a), p1 = P(0, b); c.fillRect(0, p0.y, cv.width, p1.y - p0.y); }
-    OV.anchors.forEach((a, i) => { const p = DRAG && DRAG.i === i ? P(DRAG.x, DRAG.row) : P(a[1], a[0]); c.fillStyle = "#16a34a"; c.beginPath(); c.arc(p.x, p.y, 7, 0, 7); c.fill();
-      c.strokeStyle = "#fff"; c.lineWidth = 2; c.stroke(); });
-    c.strokeStyle = "#e377c2"; c.lineWidth = 2.5; for (const a of OV.excluded || []) { const p = P(a[1], a[0]);
-      c.beginPath(); c.moveTo(p.x - 6, p.y - 6); c.lineTo(p.x + 6, p.y + 6); c.moveTo(p.x + 6, p.y - 6); c.lineTo(p.x - 6, p.y + 6); c.stroke(); }
-  }
-  c.strokeStyle = "#2563eb"; c.lineWidth = 2; for (const q of pts) { const p = P(q[1], q[0]); c.strokeRect(p.x - 5, p.y - 5, 10, 10); }
+const CAND_COL = ["#d62728", "#2563eb", "#16a34a", "#9333ea"];
+function drawFix(c, P, vis, cv) {         // the selected curve while fixing: off-scale orange, uncertain yellow, pins, guides, spots
+  const dis = CHK?.disagree || [], inDis = r => dis.some(([a, b]) => r >= a && r <= b);
+  for (const cd of (OV.candidates || [])) { if (cd.picked) continue;
+    c.strokeStyle = CAND_COL[cd.index % CAND_COL.length]; c.globalAlpha = 0.7; c.lineWidth = 2; c.setLineDash([7, 5]); poly(c, P, cd.trace, vis); c.setLineDash([]); c.globalAlpha = 1; }
+  let prev = null; const col = active()?.color || "#d62728";
+  for (const [r, x, o] of OV.trace) { if (!vis(r)) { prev = null; continue; } const p = P(x, r);
+    if (prev) { if (inDis(r)) { c.strokeStyle = "rgba(250,204,21,.55)"; c.lineWidth = 9; c.beginPath(); c.moveTo(prev.x, prev.y); c.lineTo(p.x, p.y); c.stroke(); }
+      c.lineWidth = 3; c.strokeStyle = o ? "rgba(255,140,0,.95)" : col; c.beginPath(); c.moveTo(prev.x, prev.y); c.lineTo(p.x, p.y); c.stroke(); }
+    prev = p; }
+  c.strokeStyle = "rgba(37,99,235,.85)"; c.lineWidth = 5; c.lineCap = "round";
+  for (const st of (OV.strokes || []).concat(STROKE.length ? [STROKE] : [])) { c.beginPath(); st.forEach(([r, x], i) => { const p = P(x, r); i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y); }); c.stroke(); }
+  c.lineCap = "butt";
+  if (CUR) { const sp = CUR, cols = ["#2563eb", "#f97316", "#16a34a"];
+    const a = P(0, sp.row0), b = P(0, sp.row1); c.fillStyle = "rgba(250,204,21,.12)"; c.fillRect(0, a.y, cv.width, b.y - a.y);
+    sp.choices.forEach((ch, i) => { const p = P(ch.x, sp.row); c.strokeStyle = cols[i % 3]; c.lineWidth = 4; c.beginPath(); c.arc(p.x, p.y, 16, 0, 7); c.stroke();
+      c.font = "bold 15px -apple-system,sans-serif"; c.fillStyle = cols[i % 3]; c.fillText(String(i + 1), p.x - 4, p.y - 22); }); }
+  c.fillStyle = "rgba(255,140,0,.15)"; for (const [a, b] of OV.backup_intervals || []) { const p0 = P(0, a), p1 = P(0, b); c.fillRect(0, p0.y, cv.width, p1.y - p0.y); }
+  c.fillStyle = "rgba(100,116,139,.16)"; for (const [a, b] of OV.hidden_intervals || []) { const p0 = P(0, a), p1 = P(0, b); c.fillRect(0, p0.y, cv.width, p1.y - p0.y); }
+  OV.anchors.forEach((a, i) => { const p = DRAG && DRAG.i === i ? P(DRAG.x, DRAG.row) : P(a[1], a[0]); c.fillStyle = "#16a34a"; c.beginPath(); c.arc(p.x, p.y, 7, 0, 7); c.fill();
+    c.strokeStyle = "#fff"; c.lineWidth = 2; c.stroke(); });
+  c.strokeStyle = "#e377c2"; c.lineWidth = 2.5; for (const a of OV.excluded || []) { const p = P(a[1], a[0]);
+    c.beginPath(); c.moveTo(p.x - 6, p.y - 6); c.lineTo(p.x + 6, p.y + 6); c.moveTo(p.x + 6, p.y - 6); c.lineTo(p.x - 6, p.y + 6); c.stroke(); }
 }
 window.addEventListener("resize", draw);
 
 // ------------------------------------------------------------------ clicks + keys
 async function onClick(ev) {
   if (!ev.quick || mode === "pan") return; ev.preventDefaultAction = true;
-  const ip = viewer.viewport.viewerElementToImageCoordinates(ev.position), row = ip.y, x = ip.x;
+  const ip = BASE().viewerElementToImageCoordinates(ev.position), row = ip.y, x = ip.x;
   try {
     if (mode === "word") { const w = HW.find(w => row >= w.y0 - 3 && row <= w.y1 + 3 && x >= w.x0 - 3 && x <= w.x1 + 3); if (!w) return;
       const t = prompt(`OCR read "${w.ocr_text || w.text}" (confidence ${Math.round(w.conf)}). Correct text (empty = delete):`, w.text); if (t === null || t === w.text) return;
-      HDR = Object.assign(HDR, await api("POST", A("/header/words"), {track: w.track, edits: [{i: w.i, text: t}]}));
-      HW = (await api("GET", A("/header/words"))).words; renderHeaderTable(); draw(); return; }
+      HDR = Object.assign(HDR || {}, await api("POST", A("/header/words"), {track: w.track, edits: [{i: w.i, text: t}]}));
+      HW = (await api("GET", A("/header/words"))).words; draw(); return; }
     if (mode === "circle") { await fixCall("/fix/circle", {row, x, radius: +($("circR")?.value || 60), through: ev.originalEvent?.shiftKey || false}); return; }
     if (mode === "fix") { if (Date.now() - (DRAG?.t || 0) < 300) return; await fixCall("/fix/pin", {row, x}); return; }
-    if (mode === "anchor") { await api("POST", E("/anchors"), {row, x, snap: true, window_ft: +($("winFt")?.value || 150)}); }
-    else if (mode === "exclude") { await api("POST", E("/exclude"), {row, x}); }
-    else if (mode === "seed") { await api("POST", E("/trace"), {seed: [row, x]}); setMode("anchor"); }
+    if (mode === "exclude") { await api("POST", E("/exclude"), {row, x}); }
+    else if (mode === "seed") { await api("POST", E("/trace"), {seed: [row, x]}); setMode("fix"); }
     else if (mode === "wrap") { pts.push([row, x]); draw(); if (pts.length < 2) return;
       const [a, b] = pts; pts = []; await api("POST", E("/backup_interval"), {rows: [a[0], b[0]]}); }
     else if (mode === "box") { pts.push([row, x]); draw(); if (pts.length < 2) return; const [a, b] = pts; pts = []; setMode("pan");
-      await runJob(A("/section"), {box: [a[1], b[1]], rows: [Math.min(a[0], b[0]), Math.max(a[0], b[0])]}, "section from box"); render(); }
+      await runJob(A("/section"), {box: [a[1], b[1]], rows: [Math.min(a[0], b[0]), Math.max(a[0], b[0])]}, "section from box"); await refresh(); render(false); return; }
     else if (mode === "dsec") { const d = (ST.depth_sections || []).find(d => row >= d.row0 && row <= d.row1);
       if (d) await chooseSection(d.index); return; }
+    else if (mode === "sample") { const r = await api("POST", A("/color/sample"), {row, x});
+      const name = prompt(`RGB ${r.rgb.join(", ")}. Name for this colour:`, "custom"); if (!name) return;
+      PAL.palette[name.trim()] = r.rgb; await api("POST", A("/color"), {palette: PAL.palette}); renderPalette(); return; }
     else if (mode === "label") { const v = prompt(`Depth (ft) of the label at row ${row.toFixed(0)}?`);
       if (v === null || v === "" || !isFinite(+v)) return; LBL.push({row, ocr: null, value: +v, added: true}); LBL.sort((a, b) => a.row - b.row); dirty(true); renderLabels(); draw(); return; }
     await refresh(); if (STEP === "trace") renderAnchors();
   } catch (e) { console.warn(e); }
 }
-// guided fixing: press near a pin + drag = move it; Guide mode: drag along the curve = guide stroke
-const imgPt = ev => viewer.viewport.viewerElementToImageCoordinates(ev.position);
-function pinNear(ev) { const ip = imgPt(ev), z = viewer.viewport.viewportToImageZoom(viewer.viewport.getZoom(true)), tol = 12 / z;
+const imgPt = ev => BASE().viewerElementToImageCoordinates(ev.position);
+function pinNear(ev) { const ip = imgPt(ev), z = BASE().viewportToImageZoom(viewer.viewport.getZoom(true)), tol = 12 / z;
   return (OV?.anchors || []).findIndex(a => Math.hypot(a[1] - ip.x, a[0] - ip.y) < tol); }
 function onPress(ev) {
   if (mode === "guide") { const ip = imgPt(ev); STROKE = [[ip.y, ip.x]]; ev.preventDefaultAction = true; return; }
@@ -164,19 +249,18 @@ function onDrag(ev) {
   if (mode === "node" && NODE) { const ip = imgPt(ev); NODE = {row: ip.y, x: ip.x}; HOVER = NODE; ev.preventDefaultAction = true; drawSoon(); return; }
   if (DRAG) { const ip = imgPt(ev); DRAG.row = ip.y; DRAG.x = ip.x; DRAG.moved = true; ev.preventDefaultAction = true; drawSoon(); }
 }
-let NODE = null;
-async function onRelease(ev) {
-  if (mode === "node" && NODE) { const n = NODE; NODE = null; viewer.setMouseNavEnabled(true);   // drag end or (force-)click: local ink snap
+async function onRelease() {
+  if (mode === "node" && NODE) { const n = NODE; NODE = null; viewer.setMouseNavEnabled(true);
     try { await fixCall("/fix/node", {row: n.row, x: n.x, radius: +($("circR")?.value || 60)}); } catch (e) { draw(); } return; }
   if (mode === "guide" && STROKE.length) { const st = STROKE; STROKE = [];
     if (st.length > 2) { try { await fixCall("/fix/stroke", {points: st}); } catch (e) { draw(); } } else draw(); return; }
   if (DRAG) { const d = DRAG; viewer.setMouseNavEnabled(true); DRAG = {t: Date.now()}; if (d.moved) await fixCall("/fix/move", {index: d.i, row: d.row, x: d.x}); else { DRAG = null; } }
 }
-async function fixCall(path, body) {         // one guided edit: re-trace on the server, redraw, update the change meter
-  const r = await api("POST", A(path), body); PROG = r.progress; await refresh(); CHK = null; loadChecks();
+async function fixCall(path, body) {
+  const r = await api("POST", A(path), body); PROG = r.progress; await refresh(); CHK = null; await loadChecks();
   if (STEP === "trace") { renderAnchors(); renderProgress(r); renderCands(); } return r;
 }
-async function loadChecks() { if (!SID || !ST?.traced) return; CHK = await api("GET", A("/checks")); draw(); if (STEP === "trace") renderAnchors(); }
+async function loadChecks() { if (!SID || !ST?.traced) return; CHK = await api("GET", A("/checks")); if (STEP === "trace") { renderAnchors(); showSpot(false); } draw(); }
 function renderProgress(r) {
   const el = $("prog7"); if (!el || !PROG) return; const rec = PROG.recent || [], mx = Math.max(PROG.small_ft * 4 || 20, ...rec);
   el.innerHTML = `<div class="meter">${rec.map(v => `<i style="height:${Math.max(2, 34 * v / mx)}px;background:${v <= PROG.small_ft ? "#16a34a" : "#2563eb"}" title="${v} ft changed"></i>`).join("")}</div>
@@ -188,13 +272,13 @@ document.addEventListener("keydown", e => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
   const k = e.key.toLowerCase(), b = document.querySelector(`button.tool[data-key="${k}"]`);
   if (k === "n" && STEP === "trace") { nextUncertain(); return; }
-  if (STEP === "checks" && CUR && /^[1-3]$/.test(k)) { const ch = CUR.choices[+k - 1]; if (ch) answer(ch.id); return; }
-  if (STEP === "checks" && CUR && k === "k") { answer("skip"); return; }
+  if (STEP === "trace" && CUR && /^[1-3]$/.test(k)) { const ch = CUR.choices[+k - 1]; if (ch) answer(ch.id); return; }
+  if (STEP === "trace" && CUR && k === "k") { answer("skip"); return; }
   if (k === "escape") setMode("pan"); else if (k === "z" && !e.metaKey && !e.ctrlKey) undo(); else if (b && !b.disabled) b.click();
-  else if ((k === "delete" || k === "backspace") && STEP === "depth") delLabels(); else if ((k === "delete" || k === "backspace") && STEP === "header") delHeader();
+  else if ((k === "delete" || k === "backspace") && STEP === "tracks") delLabels();
 });
 async function undo() { if (!SID || !ST?.undo.length) return; const r = await api("POST", A("/undo")); toast("undone: " + r.undone);
-  if (STEP === "header") await loadHeader(); if (STEP === "depth") await loadLabels(); await refresh(); render(false); }
+  await loadCurves(); if (STEP === "tracks") await loadLabels(); await refresh(); loadHighlight(); render(false); }
 $("undoBtn").onclick = undo;
 const dirty = on => $("dirty").innerHTML = on ? '<span class="warnc">● unapplied changes - press the blue button to apply</span>' : "";
 const tool = (m, key, label, dis) => `<button class="tool" data-mode="${m}" data-key="${key}" ${dis || ""}>${label} <span class="kbd">${key.toUpperCase()}</span></button>`;
@@ -222,119 +306,69 @@ function chart(o) {   // o: {w,h,title,xlabel,ylabel,invertY,series:[{pts:[[x,y]
 }
 function fig(html, small) { $("fig").innerHTML = html; $("fig").hidden = !html; $("fig").classList.toggle("small", !!small); }
 
-// ------------------------------------------------------------------ steps
+// ------------------------------------------------------------------ tabs
 const R = {};
 async function render(refit = true) { const st = STEPS.findIndex(s => s.id === STEP); setMode("pan"); dirty(false); fig("");
-  $("stepTitle").textContent = `${STEPS.slice(0, st + 1).filter(s => !s.hidden).length} · ${STEPS[st].title}`; $("mainBtn").disabled = false;
-  try { await R[STEP](); } catch (e) { console.warn(e); } bindTools(); bindEngine(); if (refit) focusStep(); draw(); }
+  $("stepTitle").textContent = `${st + 1} · ${STEPS[st].title}`; $("mainBtn").disabled = false;
+  document.body.dataset.step = $("main").dataset.step = STEP; $("tabBadge").textContent = `${st + 1} · ${STEPS[st].title}`;
+  const save = STEP === "save" && !!SID;                   // Check and save: scan left, logs right
+  $("main").classList.toggle("split", save); $("logPane").hidden = !save; $("layers").hidden = !viewer || save; $("lyState").hidden = !viewer || save;
+  if (viewer) viewer.forceResize?.();
+  $("scalePops").innerHTML = ""; $("curvePanel").hidden = !(SID && STEP === "curves" && CVIEW === "curves");
+  try { await R[STEP](); } catch (e) { console.warn(e); } bindTools(); applyLayers(); if (refit) focusStep(); draw(); }
 Shell.init({steps: STEPS, onStep: (i, s) => { STEP = s.id; render(); }});
 const main = (label, fn) => { $("mainBtn").textContent = label; $("mainBtn").onclick = async () => { $("mainBtn").disabled = true; try { await fn(); } catch (e) { console.warn(e); } finally { $("mainBtn").disabled = false; } }; };
 const next = () => Shell.complete(Shell.cur);
 const on = (id, fn) => { const b = $(id); if (b) b.onclick = async () => { try { await fn(); } catch (e) { console.warn(e); } }; };
+async function upload(file) {
+  const r = await fetch("/app/api/upload", {method: "POST", headers: {"X-Filename": encodeURIComponent(file.name)}, body: file});
+  const j = await r.json(); if (!r.ok) { toast(j.detail || "upload failed", true); throw new Error(j.detail); } return j.path;
+}
+async function afterLoad(sid) {
+  SID = sid; ST = null; Shell.reset(0); await refresh(false); await loadCurves();
+  LAY = await api("GET", A("/layout")); GRID = await api("GET", A("/grid_lines")); await loadLabels(); await openViewer(); await refresh();
+  const errs = Object.entries(ST.errors || {}).filter(([k]) => !["depth_section", "color"].includes(k)); if (errs.length) toast(errs.map(([k, v]) => `${k}: ${v}`).join("\n"), true);
+}
 
-R.load = () => {
-  $("stepLead").textContent = "Pick a scanned log. The app then does everything automatically once; the next steps just ask you to check each part.";
-  const f = INFO.features;
-  $("stepBody").innerHTML = `<div class="row"><select id="cat" style="width:100%">${INFO.catalog.map((c, i) => `<option value="${i}">${esc(c.well)} · ${esc(c.scan.split("/").pop())} · ${esc(c.curve)}${c.las ? " · LAS" : ""}</option>`).join("")}</select></div>
-    <div class="card">pyLogDigitizer turns a scanned paper well log into a LAS file. Everything runs on this computer.</div>
-    <div class="note">Project: ${esc(INFO.project)}<br>Presets come from <code>dataset_profiles/*_wells.yaml</code>; other TIFFs under <code>example_data/</code> are listed too.</div>
+R.open = () => {
+  $("stepLead").textContent = "Pick a scanned log. Everything is then found automatically once: tracks, depth numbers, header scales and every curve.";
+  const f = INFO.features, multi = ST && (ST.depth_sections || []).length > 1, sk = ST?.skew || [];
+  $("stepBody").innerHTML = `<h3>Scan</h3><div class="row"><select id="cat" style="width:100%">${INFO.catalog.map((c, i) => `<option value="${i}">${esc(c.well)} · ${esc(c.scan.split("/").pop())}${c.las ? " · with LAS" : ""}</option>`).join("")}</select></div>
+    <div class="row"><label class="filebtn">or choose a file… <input type="file" id="filePick" accept=".tif,.tiff,.png,.jpg,.jpeg,.pdf"></label><span class="note" id="fileName"></span></div>
+    <div class="row"><label class="filebtn">reference LAS (optional) <input type="file" id="lasPick" accept=".las"></label><span class="note" id="lasName"></span></div>
     <div class="row"><label><input type="checkbox" id="autoLayout" checked> automatic layout</label></div>
-    <h3>Installed features</h3><div class="card">Tracer backend: <b>${esc(f.backend)}</b>
+    ${ST ? `<div class="card">Loaded: <b>${esc(ST.well)}</b> · ${ST.width}×${ST.height} px · ${ST.n_curves} curve(s) found (${ST.kind === "color" ? "by colour" : ST.kind === "style" ? "by line style" : "one curve"})</div>
+      ${multi ? `<h3>Depth section</h3><div class="note">This sheet holds more than one log section. Pick one (or click its band on the scan).</div>
+        ${ST.depth_sections.map((d, i) => `<div class="row"><button id="dsec${d.index}" style="width:100%" ${ST.depth_section === d.index ? 'class="primary"' : ""}>Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft · ${fmt(d.px_per_ft, 2)} px/ft</button></div>`).join("")}` : ""}
+      <h3>Straight?</h3><div class="note">Deskewed automatically (${sk.length ? `${fmt(Math.min(...sk), 2)}° to ${fmt(Math.max(...sk), 2)}°` : "no blocks"}). If the grid still leans, turn it a little:</div>
+      <div class="row"><label>rotate</label><input type="number" id="rot" step="0.1" min="-10" max="10" value="${ST.rotate || 0}" style="width:6em"> °<button id="rotApply">Apply</button></div>` : ""}
+    <details class="more"><summary>Installed features</summary><div class="card">Tracer backend: <b>${esc(f.backend)}</b>
     <div class="${f.ocr.ok ? "" : "disabled-feature"}">OCR (depth labels, header): ${f.ocr.ok ? `<span class="okc">RapidOCR</span>` : "no"}</div>${hint(f.ocr)}
     <div class="${f.ml.ok ? "" : "disabled-feature"}">ML U-Net cost map: ${f.ml.ok ? '<span class="okc">yes</span>' : "no"}</div>${hint(f.ml)}
     <div class="${f.plot.ok ? "" : "disabled-feature"}">QC plot PNG export: ${f.plot.ok ? '<span class="okc">yes</span>' : "no"}</div>${hint(f.plot)}</div>
-    <div id="loaded"></div>`;
-  if (ST) $("loaded").innerHTML = `<div class="card">Loaded: <b>${esc(ST.well)}</b> · ${ST.width}×${ST.height} px. Loading another scan replaces it (export first).</div>`;
-  main(ST ? "Load this scan (replaces current)" : "Open & analyse", async () => {
-    const c = INFO.catalog[+$("cat").value];
-    const r = await runJob("/app/api/open", {scan: c.scan, curve: c.curve, well: c.well, las: c.las, settings: c.settings, auto_layout: $("autoLayout").checked}, "loading");
-    SID = r.sid; ST = null; Shell.reset(0); await refresh(false);
-    STEPS.find(s => s.id === "qc").hidden = !ST.las; STEPS.find(s => s.id === "dsection").hidden = !((ST.depth_sections || []).length > 1); Shell.reset(0); LAY = await api("GET", A("/layout")); await openViewer(); await refresh();
-    const errs = Object.entries(ST.errors || {}).filter(([k]) => k !== "depth_section"); if (errs.length) toast(errs.map(([k, v]) => `${k}: ${v}`).join("\n"), true);
-    next();
+    <div class="note">Project: ${esc(INFO.project)} · presets from <code>dataset_profiles/*_wells.yaml</code></div></details>`;
+  $("filePick").onchange = () => { $("fileName").textContent = $("filePick").files[0]?.name || ""; };
+  $("lasPick").onchange = () => { $("lasName").textContent = $("lasPick").files[0]?.name || ""; };
+  if (multi) { ST.depth_sections.forEach(d => on("dsec" + d.index, () => chooseSection(d.index))); setTimeout(() => { mode = "dsec"; }, 0); }
+  on("rotApply", async () => { const r = await runJob(A("/rotate"), {deg: +$("rot").value || 0}, "rotate and analyse again"); await afterLoad(r.sid); render(false); });
+  main(ST ? "Continue" : "Open & analyse", async () => {
+    const fp = $("filePick").files[0], lp = $("lasPick").files[0];
+    if (ST && !fp && $("cat").dataset.touched !== "1") { if (multi && ST.errors?.depth_section) { toast("pick a depth section first", true); return; } next(); return; }
+    let body;
+    if (fp) body = {scan: await upload(fp), curve: "GR", well: fp.name.replace(/\.[^.]+$/, ""), las: lp ? await upload(lp) : null, settings: {}, auto_layout: $("autoLayout").checked};
+    else { const c = INFO.catalog[+$("cat").value]; body = {scan: c.scan, curve: c.curve, well: c.well, las: lp ? await upload(lp) : c.las, settings: c.settings, auto_layout: $("autoLayout").checked}; }
+    const r = await runJob("/app/api/open", body, "loading");
+    await afterLoad(r.sid); render(false);
+    if (!((ST.depth_sections || []).length > 1 && ST.errors?.depth_section)) next();
   });
-  help(`Choose a scan and press <b>Open & analyse</b>. Progress shows as n / N on the right. ${NAV}`);
+  $("cat").onchange = () => { $("cat").dataset.touched = "1"; if (ST) $("mainBtn").textContent = "Open & analyse (replaces current)"; };
+  help(`Choose a scan from the list or a file, then <b>Open & analyse</b>. Progress shows as n / N below. ${NAV}`);
 };
+async function chooseSection(i) { await runJob(A("/depth_section"), {index: i}, "depth section"); LAY = await api("GET", A("/layout")); await loadLabels(); await refresh(); render(false); }
 
-R.deskew = () => {
-  $("stepLead").textContent = "Look at the picture: the grid should be straight and the coloured lines should sit on the track edges.";
-  const sk = LAY?.skew || [], t = LAY?.timings || {};
-  $("stepBody").innerHTML = LAY?.available ? `<div class="card">Skew per block: ${fmt(Math.min(...sk.map(s => s[1])), 2)}° to ${fmt(Math.max(...sk.map(s => s[1])), 2)}° (${sk.length} blocks)<br>
-    Working sheet ${ST.width}×${ST.height} px · load+deskew ${fmt(t.load_deskew_s)} s · follow ${fmt(t.follow_s)} s · labels ${fmt(t.labels_s)} s</div>
-    <div class="note">If the sheet is clearly wrong (no tracks found), go back to step 1 and load without automatic layout; you can then draw the track box by hand in step 3.</div>`
-    : `<div class="card err">${esc(ST.errors?.layout || "no automatic layout")}</div>`;
-  if (LAY?.available) fig(chart({title: "Deskew angle per block", series: [{pts: sk.map(s => [s[0], s[1]]), color: TAB10[0], lw: 1.5}, {pts: sk.map(s => [s[0], s[1]]), color: TAB10[0], dots: true, r: 2.5, alpha: 1}],
-    xlabel: "sheet row (px)", ylabel: "skew (deg)", w: 350, h: 190}), true);
-  main("Looks right — continue", async () => next());
-  help(NAV);
-};
-
-R.section = () => {
-  $("stepLead").textContent = "Pick the column (track) that holds your curve. If no track is found, draw a box around it.";
-  const tr = (ST.tracks || []).filter(t => t.name !== "depth"), cur = ST.section?.track, dtb = ST.depth_top_base || [];
-  $("stepBody").innerHTML = `<h3>Track</h3><div class="radio">${tr.map((t, j) => `<label><input type="radio" name="trk" value="${t.name}" ${t.name === cur ? "checked" : ""}>
-      <span class="swatch" style="background:${TAB10[Object.keys(LAY?.edges || {}).indexOf(t.name + ".left") % 10]}"></span>${t.name} <span class="note">x ${fmt(t.left, 0)}–${fmt(t.right, 0)} px</span></label>`).join("") || '<div class="note">no tracks detected - draw a box</div>'}</div>
-    <div class="row">${tool("box", "b", "Draw box")}</div><div class="note">Box: click two opposite corners of the curve's track.</div>
-    <h3>Depth range (ft)</h3><div class="row"><label>top</label><input type="number" id="dTop" value="${dtb[0] != null ? dtb[0].toFixed(0) : ""}"></div>
-    <div class="row"><label>base</label><input type="number" id="dBase" value="${dtb[1] != null ? dtb[1].toFixed(0) : ""}"></div>
-    <div class="row"><button id="secReset">Reset to detected</button></div>
-    <h3>Move the track edges (px)</h3><div class="row"><label>left</label><input type="number" id="eL" value="0" step="1"><label style="min-width:0">right</label><input type="number" id="eR" value="0" step="1"><button id="eApply">Move</button></div>
-    <div class="card">Current: <b>${ST.section ? (ST.section.kind === "box" ? `box x ${ST.section.x0}–${ST.section.x1}` : ST.section.track) : "none"}</b>, rows ${ST.section ? ST.section.rows.join("–") : "–"}</div>
-    ${KEYS("<b>Draw box</b> (B): click two corners", "Changing the section re-traces it (the trace step opens ready)", NAV)}`;
-  document.querySelectorAll("input[name=trk],#dTop,#dBase").forEach(i => i.oninput = () => dirty(true));
-  on("eApply", async () => { await runJob(A("/calib/edges"), {left_dx: +$("eL").value || 0, right_dx: +$("eR").value || 0}, "track edges"); await refresh(); render(false); });
-  on("secReset", async () => { const t = INFO.catalog.find(c => ST.scan.endsWith(c.scan))?.settings?.track || "track1"; await runJob(A("/section"), {track: t}, "section"); await refresh(); render(); });
-  main("Use this section", async () => {
-    const t = document.querySelector("input[name=trk]:checked")?.value, d0 = $("dTop").value, d1 = $("dBase").value;
-    const same = ST.section && t === ST.section.track && (!dtb.length || (+d0 === +dtb[0].toFixed(0) && +d1 === +dtb[1].toFixed(0)));
-    if (!same && (t || ST.section?.kind === "box")) {
-      const body = t ? {track: t} : {box: [ST.section.x0, ST.section.x1]}; if (d0 && d1 && dtb.length && !(+d0 === +dtb[0].toFixed(0) && +d1 === +dtb[1].toFixed(0))) body.depth_range = [+d0, +d1];
-      await runJob(A("/section"), body, "section"); await refresh(); }
-    if (!ST.section) { toast("choose a track or draw a box", true); return; }
-    next();
-  });
-  help(`Coloured lines = followed track boundaries, red ticks = depth labels (as in the notebook). <b>B</b> draw box. ${NAV}`);
-};
-
-// header OCR ---------------------------------------------------------
-async function loadHeader() { HDR = await api("GET", A("/header")); }
-function hdrEdited(r) { const o = (HDR.ocr || []).find(q => q.id === r.id); if (!o) return false; return ["mnemonic", "unit", "left", "right", "type", "backup_left", "backup_right", "track"].some(k => String(o[k] ?? "") !== String(r[k] ?? "")); }
-function renderHeaderTable() {
-  const cols = [["track", 52], ["mnemonic", 52], ["unit", 46], ["left", 48], ["right", 48], ["type", 56], ["backup_left", 44], ["backup_right", 44]];
-  $("hdrTbl").innerHTML = `<tr><th></th><th>track</th><th>curve</th><th>unit</th><th>left</th><th>right</th><th>type</th><th colspan=2>backup</th></tr>` + HDR.rows.map((r, i) =>
-    `<tr data-i="${i}" class="${HSEL.has(i) ? "sel" : ""} ${r.origin === "added" ? "added" : hdrEdited(r) ? "edited" : ""}" title="${esc(r.label ? "OCR read: " + r.label : "")}${r.review?.length ? " · needs review: " + r.review.join(", ") : ""}">
-     <td><input type="radio" name="huse" value="${r.id}" ${HDR.choice === r.id ? "checked" : ""} title="use this row in the Scale step"></td>` +
-    cols.map(([k, w]) => k === "type" ? `<td><select data-k="type">${["linear", "log"].map(t => `<option ${r.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></td>`
-      : `<td><input data-k="${k}" value="${esc(r[k] ?? "")}" style="${(r.review || []).some(q => q.startsWith(k.replace("left", "scale_left").replace("right", "scale_right").split("_")[0])) ? "border-color:#d97706" : ""}"></td>`).join("") + "</tr>").join("");
-  $("hdrTbl").querySelectorAll("tr[data-i]").forEach(tr => {
-    const i = +tr.dataset.i; tr.onclick = ev => { if (ev.target.tagName === "TD") { HSEL.has(i) ? HSEL.delete(i) : HSEL.add(i); renderHeaderTable(); } };
-    tr.querySelectorAll("[data-k]").forEach(inp => inp.onchange = () => { HDR.rows[i][inp.dataset.k] = inp.value; dirty(true); renderHeaderTable(); });
-  });
-  $("hdrTbl").querySelectorAll("input[name=huse]").forEach(r => r.onchange = () => { HDR.choice = r.value; dirty(true); });
-}
-function delHeader() { if (!HSEL.size) return; HDR.rows = HDR.rows.filter((_, i) => !HSEL.has(i)); HSEL.clear(); dirty(true); renderHeaderTable(); }
-R.header = async () => {
-  const f = INFO.features.ocr;
-  $("stepLead").textContent = "These are the curve names and scale numbers read from the top of the log. Fix anything that looks wrong; orange = please check.";
-  $("stepBody").innerHTML = `<div id="hdrInfo" class="note"></div>${hint(f)}<div><table class="t fit" id="hdrTbl"></table></div>
-    <div class="row"><button id="hAdd">+ Add row</button><button id="hDel" class="danger">Delete selected</button><button id="hRevert">Revert to OCR</button><button id="hRerun" ${off(f)}>Re-run OCR</button></div>
-    <div class="row">${tool("word", "e", "Edit OCR words")}<span class="muted">click a boxed word on the image to correct it; the scale is re-fitted</span></div>${engineSel()}
-    ${KEYS("Click a cell's margin to select a row · <kbd>Delete</kbd> removes selected rows", "Type over any value · ✎ = edited, + = added, orange border = OCR flagged for review", "Hover a row to see what OCR read · ◉ = row used in step 6 (Scale)", "Nothing is applied until you press the blue button; <kbd>Z</kbd> undoes")}`;
-  await loadHeader();
-  $("hdrInfo").innerHTML = !f.ok ? "OCR is not installed: add the curve's scale by hand (+ Add row) or skip to step 6." : HDR.error ? `<span class="err">${esc(HDR.error)}</span>` : `${HDR.rows.length} curve(s) found` + (HDR.rows.filter(r => r.review?.length).length ? ` · <span class="warnc">${HDR.rows.filter(r => r.review?.length).length} need a look (orange)</span>` : "");
-  if (!HDR.choice) { const m = HDR.rows.find(r => r.mnemonic === ST.curve && r.track === ST.section?.track) || HDR.rows.find(r => r.track === ST.section?.track); if (m) HDR.choice = m.id; }
-  renderHeaderTable(); try { HW = (await api("GET", A("/header/words"))).words; } catch (e) { HW = []; } draw();
-  on("hAdd", () => { HDR.rows.push({id: Math.random().toString(36).slice(2, 8), origin: "added", track: ST.section?.track || "track1", mnemonic: ST.curve, unit: "", left: "", right: "", type: "linear", backup_left: "", backup_right: "", review: []}); dirty(true); renderHeaderTable(); });
-  on("hDel", delHeader);
-  on("hRevert", async () => { HDR = Object.assign(HDR, await api("POST", A("/header/revert"))); HSEL.clear(); renderHeaderTable(); dirty(false); await refresh(false); });
-  on("hRerun", async () => { await runJob(A("/header/rerun"), {}, "header OCR"); await loadHeader(); renderHeaderTable(); });
-  main("Confirm header — continue", async () => { HDR = Object.assign(HDR, await api("POST", A("/header"), {rows: HDR.rows, choice: HDR.choice || null})); await refresh(false); next(); });
-  help(`Viewer shows the header area. ${NAV}`);
-};
-
-// depth --------------------------------------------------------------
+// Tracks and depth ---------------------------------------------------
 async function loadLabels() { LAY = await api("GET", A("/layout")); LBL = (LAY.labels || []).map(([row, v]) => ({row, ocr: v, value: v})); LBLsel.clear(); }
-function labelDoubt(l) {                 // OCR value missing or off the depth line fitted through the anchors
+function labelDoubt(l) {
   if (l.added || l.value !== l.ocr) return "";
   if (l.ocr == null) return "could not be read";
   const a = (ST.calibration?.depth_anchors || []).slice().sort((p, q) => p[0] - q[0]);
@@ -344,6 +378,7 @@ function labelDoubt(l) {                 // OCR value missing or off the depth l
   return Math.abs(d - l.ocr) > 1 ? `read ${l.ocr}, but the others suggest ${d.toFixed(0)}` : "";
 }
 function renderLabels() {
+  if (!$("lblTbl")) return;
   const nd = LBL.filter(l => labelDoubt(l)).length;
   if ($("lblDoubt")) $("lblDoubt").innerHTML = nd ? `<span class="warnc">${nd} number(s) need a look (orange)</span>` : "";
   $("lblTbl").innerHTML = `<tr><th>#</th><th>row (px)</th><th>read</th><th>depth (ft)</th></tr>` + LBL.map((l, i) =>
@@ -354,131 +389,171 @@ function renderLabels() {
   $("lblTbl").querySelectorAll("input").forEach(inp => inp.onchange = () => { const i = +inp.dataset.i; LBL[i].value = inp.value === "" ? null : +inp.value; dirty(true); renderLabels(); draw(); });
 }
 function delLabels() { if (!LBLsel.size) return; LBL = LBL.filter((_, i) => !LBLsel.has(i)); LBLsel.clear(); dirty(true); renderLabels(); draw(); }
-function depthFig() {
-  if (!ST.residuals?.length) { fig(""); return; }
-  fig(chart({title: "Depth anchors: leave-one-out residuals", series: [{pts: ST.residuals, color: TAB10[0], dots: true, r: 2.5, alpha: 1}], xlabel: "depth (ft)", ylabel: "LOO residual (ft)", w: 350, h: 180}), true);
-}
-async function chooseSection(i) { await runJob(A("/depth_section"), {index: i}, "depth section"); LAY = await api("GET", A("/layout")); await refresh(); render(false); }
-R.dsection = () => {
-  const D = ST.depth_sections || [], cur = ST.depth_section;
-  $("stepLead").textContent = "This sheet has more than one log section (for example a 2-inch and a 5-inch print). Click the one you want on the scan, or pick it below.";
-  $("stepBody").innerHTML = `${ST.errors?.depth_section ? `<div class="card warnc">Not chosen yet - the header does not say which one.</div>` : `<div class="card">Using section ${D.findIndex(d => d.index === (cur ?? ST.calibration?.section_used)) + 1}${cur == null ? " (it matches the depths in the header)" : ""}.</div>`}
-    ${D.map((d, i) => `<div class="row"><button id="dsec${d.index}" style="width:100%" ${cur === d.index ? 'class="primary"' : ""}>Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft · ${fmt(d.px_per_ft, 2)} px/ft</button></div>`).join("")}
-    ${KEYS("Click inside a coloured band on the scan to choose it", "More px/ft = a more detailed print", NAV)}`;
-  D.forEach(d => on("dsec" + d.index, () => chooseSection(d.index)));
-  setTimeout(() => { mode = "dsec"; }, 0);
-  main("Use this section — continue", async () => {
-    if (ST.errors?.depth_section) { toast("click a section on the scan first", true); return; }
-    next(); });
-  help(`Coloured bands = log sections found on the sheet. Click one to use it. ${NAV}`);
-};
-
-R.depth = async () => {
-  const c = ST.calibration || {}, f = INFO.features.ocr;
-  $("stepLead").textContent = "These are the depth numbers read from the scan. Fix any orange ones. If none could be read, type one known depth below.";
-  $("stepBody").innerHTML = `<div class="card">${c.px_per_ft ? `<b>${esc(c.depth_source)}</b> · ${c.depth_anchors.length} anchors · ${fmt(c.px_per_ft, 3)} px/ft` : '<span class="err">no depth calibration</span>'}
-     ${ST.errors?.depth ? `<div class="err">${esc(ST.errors.depth)}</div>` : ""}</div>${f.ok ? "" : hint(f)}
-    <div class="note" id="lblDoubt"></div><div class="list" style="max-height:230px"><table class="t" id="lblTbl"></table></div>
+R.tracks = async () => {
+  const c = ST.calibration || {}, f = INFO.features.ocr, tr = (GRID?.tracks || []);
+  $("stepLead").textContent = "The track borders (blue), the grid and the depth numbers (red) found on the scan, in one view. Fix any depth number or border that is off.";
+  $("stepBody").innerHTML = `<div class="card">${c.px_per_ft ? `<b>${esc(c.depth_source)}</b> · ${c.depth_anchors.length} depth anchors · ${fmt(c.px_per_ft, 3)} px/ft` : '<span class="err">no depth calibration</span>'}
+     · ${tr.length} track(s)${ST.errors?.depth ? `<div class="err">${esc(ST.errors.depth)}</div>` : ""}</div>${f.ok ? "" : hint(f)}
+    <h3>Depth numbers</h3><div class="note" id="lblDoubt"></div><div class="list" style="max-height:210px"><table class="t" id="lblTbl"></table></div>
     <div class="row">${tool("label", "l", "+ Add label")}<button id="lDel" class="danger">Delete selected</button><button id="lReset">Reset to automatic</button></div>
-    <h3>Or type one known depth</h3><div class="note">Depth of the first number below the header, and the step between numbers (often 100).</div><div class="row"><label>first label</label><input type="number" id="fd" placeholder="ft"><label style="min-width:0">step</label><input type="number" id="li" placeholder="100"></div>
-    <div class="row"><button id="lAuto">Re-run automatic</button></div>${engineSel()}
-    ${KEYS("<b>+ Add label</b> (L): click a printed depth label, type its depth", "Click a row to select and jump to it · <kbd>Delete</kbd> removes selected", "✎ edited, + added · applying edited labels uses them as anchors (piecewise linear)", "Applying re-traces the section; <kbd>Z</kbd> undoes")}`;
-  await loadLabels(); renderLabels(); depthFig();
+    <details class="more"><summary>Or type one known depth</summary><div class="note">Depth of the first number below the header, and the step between numbers (often 100).</div><div class="row"><label>first label</label><input type="number" id="fd" placeholder="ft"><label style="min-width:0">step</label><input type="number" id="li" placeholder="100"></div>
+    <div class="row"><button id="lAuto">Re-run automatic</button></div>${ocrLine()}</details>
+    <h3>Track borders</h3><div class="row"><label>track</label><select id="trSel">${tr.map(t => `<option value="${t.name}" ${active()?.track === t.name ? "selected" : ""}>${t.name} · x ${fmt(t.left, 0)}–${fmt(t.right, 0)} px</option>`).join("")}</select></div>
+    <div class="row"><label>move left</label><input type="number" id="eL" value="0" step="1" style="width:5em"><label style="min-width:0">right</label><input type="number" id="eR" value="0" step="1" style="width:5em"><button id="eApply">Move</button></div>
+    <div class="row">${tool("box", "b", "Draw box")}<span class="note">no track found? click two corners of the curve's track</span></div>
+    ${KEYS("<b>L</b> add a depth label · <kbd>Delete</kbd> removes selected rows", "Moving a border re-traces every curve in that track", "Applying depths re-traces every curve; <kbd>Z</kbd> undoes", NAV)}`;
+  renderLabels();
+  if (ST.residuals?.length) fig(chart({title: "Depth anchors: leave-one-out residuals", series: [{pts: ST.residuals, color: TAB10[0], dots: true, r: 2.5, alpha: 1}], xlabel: "depth (ft)", ylabel: "LOO residual (ft)", w: 350, h: 170}), true);
   on("lDel", delLabels);
-  on("lReset", async () => { await runJob(A("/depth"), {mode: "reset"}, "depth"); await refresh(); render(); });
-  on("lAuto", async () => { await runJob(A("/depth"), {mode: "auto", first_depth: $("fd").value, label_interval: $("li").value}, "depth"); await refresh(); render(); });
+  on("lReset", async () => { await runJob(A("/depth"), {mode: "reset"}, "depth"); await loadLabels(); await refresh(); render(false); });
+  on("lAuto", async () => { await runJob(A("/depth"), {mode: "auto", first_depth: $("fd").value, label_interval: $("li").value}, "depth"); await loadLabels(); await refresh(); render(false); });
+  on("eApply", async () => { const t = $("trSel").value, c0 = CURV.curves.find(c => c.track === t);
+    if (c0 && c0.id !== CURV.active) await selectCurve(c0.id, false);
+    await runJob(A("/calib/edges"), {left_dx: +$("eL").value || 0, right_dx: +$("eR").value || 0}, "track borders"); GRID = await api("GET", A("/grid_lines")); LAY = await api("GET", A("/layout")); await refresh(); render(false); });
   main("Apply depths — continue", async () => {
     const edited = LBL.some(l => l.added || l.value !== l.ocr) || LBL.length !== (LAY.labels || []).length;
     if (edited) { await runJob(A("/depth"), {mode: "labels", labels: LBL.filter(l => l.value != null).map(l => [l.row, l.value])}, "depth from labels"); await refresh(); }
-    else if (!c.px_per_ft) { toast("no depth calibration yet: edit/add labels (≥ 2) or use first label + step", true); return; }
+    else if (!c.px_per_ft) { toast("no depth calibration yet: edit/add labels (≥ 2) or type the first label + step", true); return; }
     next();
   });
-  help(`Red ticks = depth labels with their values (orange ? = OCR could not read). <b>L</b> add label. ${NAV}`);
+  help(`Blue = track borders, thin lines = grid, red ticks = depth numbers (orange ? = could not be read). <b>L</b> add label. ${NAV}`);
 };
 
-R.scale = () => {
-  const s = ST.calibration.scale, h = HDR?.rows?.find(r => r.id === (HDR.choice || ST.header_choice));
-  const v = h && h.left !== "" && h.left != null ? {left: h.left, right: h.right, type: h.type, backup: h.backup_left != null && h.backup_left !== "" ? [h.backup_left, h.backup_right] : null} : null;
-  const src = v ? `from header row <b>${esc(h.mnemonic)}</b> (${esc(h.track)}) - check it` : "current values";
-  const F = v ? Object.assign({}, s, v) : s;
-  $("stepLead").textContent = "The values at the left and right edges of the track. They usually come from the header; just check them.";
-  $("stepBody").innerHTML = `<div class="note">Filled ${src}.</div>
-    <div class="row"><label>left</label><input type="number" id="sL" value="${F.left}"><label style="min-width:0">right</label><input type="number" id="sR" value="${F.right}"></div>
-    <div class="row"><label>type</label><select id="sT"><option ${F.type === "linear" ? "selected" : ""}>linear</option><option ${F.type === "log" ? "selected" : ""}>log</option></select></div>
-    <h3>Wraparound</h3><div class="row"><label>backup</label><input type="number" id="bL" value="${F.backup ? F.backup[0] : ""}"><input type="number" id="bR" value="${F.backup ? F.backup[1] : ""}"></div>
-    <div class="row"><label>wraps on</label><select id="wS"><option ${s.wrap_side === "right" ? "selected" : ""}>right</option><option ${s.wrap_side === "left" ? "selected" : ""}>left</option></select>
-      <label style="min-width:0"><input type="checkbox" id="hat" ${s.use_hatch ? "checked" : ""}> hatched backup</label></div>
-    <div class="row"><button id="sReset">Reset to preset</button></div>
-    <h3>From two grid lines</h3><div class="note">Panel x (px from the left track edge) and the value there. Grid lines at x: <span id="gX">…</span></div>
-    <div class="row"><input type="number" id="p1x" placeholder="x1"><input type="number" id="p1v" placeholder="value 1"><input type="number" id="p2x" placeholder="x2"><input type="number" id="p2v" placeholder="value 2"><button id="p2Apply">Fit</button></div>
-    <h3>Grid lines</h3><div class="note">Straighten bent grid lines, then every line gets a value from two or more labels. Edit any value and press Fit values; labels that disagree turn red.</div>
-    <div class="row"><button id="gDetect">Straighten grid</button><button id="gOff">Undo straightening</button><button id="gVals">Fit values</button><label><input type="checkbox" id="gEdit"> drag grid nodes</label></div>
-    <div id="gTable" class="note"></div><div id="gWarn" class="note"></div>
-    <div id="gEditor" style="display:none"><canvas id="gCanvas" style="border:1px solid #888;cursor:crosshair"></canvas><img id="gPrev" style="border:1px solid #888;margin-left:6px"></div>
-    <div class="card">Applied: ${s.left} → ${s.right} ${s.type}${s.backup ? `, backup ${s.backup[0]} → ${s.backup[1]} (${s.wrap_side})` : ""} · wraps found: ${ST.n_wraps ?? "–"}</div>
-    ${KEYS("Applying only re-maps values (no re-trace)", "<b>wraps on</b>: the edge the curve leaves through (GR: right; DT 100→40: left)", "<kbd>Z</kbd> undoes")}`;
-  if (v) dirty(true);
-  document.querySelectorAll("#stepBody input,#stepBody select").forEach(i => i.oninput = () => dirty(true));
-  const apply = async b => { await api("POST", E("/scale"), b); await refresh(); };
-  api("GET", A("/calib")).then(c => { const g = $("gX"); if (g) g.textContent = (c.grid_x || []).map(x => x.toFixed(0)).join(", ") || "none found"; }).catch(() => {});
-  on("p2Apply", async () => { const r = await api("POST", A("/calib/scale2"), {x1: +$("p1x").value, v1: +$("p1v").value, x2: +$("p2x").value, v2: +$("p2v").value, type: $("sT").value});
-    toast(`scale ${fmt(r.left, 3)} → ${fmt(r.right, 3)}`); await refresh(); render(false); });
-  const gridShow = g => {
-    const t = $("gTable"); if (!t) return;
-    const lines = g.lattice ? g.lattice.u : (g.fit ? g.fit.line_x : []);
-    const vals = g.fit ? g.fit.values : [];
-    const bad = new Set((g.fit?.outliers || []).map(o => Math.round(o.x)));
-    t.innerHTML = lines.length ? lines.map((x, k) => `<span style="display:inline-block;margin:2px;${bad.has(Math.round(x)) ? "color:#c00" : ""}">x ${x.toFixed(0)}<br><input class="gv" data-x="${x}" type="number" style="width:5em" value="${vals[k] ?? ""}"></span>`).join("")
-      : "No straightened grid yet.";
-    $("gWarn").textContent = (g.fit?.warnings || []).join(" · ");
-  };
-  const gridLoad = async () => { const g = await api("GET", A("/grid")); gridShow(g); return g; };
-  gridLoad().catch(() => {});
-  on("gDetect", async () => { await runJob(A("/grid/detect"), {}, "straighten grid"); await api("POST", A("/grid/values"), {}); const g = await gridLoad();
-    toast(`grid straightened: ${g.lattice ? g.lattice.u.length : 0} lines`); await refresh(); render(false); });
-  on("gOff", async () => { await api("POST", A("/grid/off")); await gridLoad(); await refresh(); render(false); });
-  on("gVals", async () => {
-    const labels = [...document.querySelectorAll(".gv")].filter(i => i.value !== "" && i.dataset.edited).map(i => [+i.dataset.x, +i.value]);
-    const all = [...document.querySelectorAll(".gv")].filter(i => i.value !== "").map(i => [+i.dataset.x, +i.value]);
-    const r = await api("POST", A("/grid/values"), {labels: labels.length >= 2 ? labels : all, kind: $("sT").value});
-    toast(`scale ${fmt(r.left, 3)} → ${fmt(r.right, 3)} ${r.kind}`); await refresh(); render(false); });
-  document.addEventListener("input", ev => { if (ev.target.classList?.contains("gv")) ev.target.dataset.edited = "1"; });
-  on("gEdit", async () => {                  // node editor: drag a lattice node, see the straightened preview live
-    const box = $("gEditor"); box.style.display = $("gEdit").checked ? "block" : "none"; if (!$("gEdit").checked) return;
-    const g = await gridLoad(); if (!g.lattice) { toast("straighten the grid first"); return; }
-    const L = g.lattice, cv = $("gCanvas"), H = Math.min(g.rows, 1500), sc = Math.min(1, 500 / H);
-    cv.width = g.width * sc; cv.height = H * sc; const ctx = cv.getContext("2d");
-    let drag = null, X = L.X.map(r => r.slice()), Y = L.Y.map(r => r.slice());
-    const draw = () => { ctx.clearRect(0, 0, cv.width, cv.height); ctx.strokeStyle = "#08f";
-      for (let i = 0; i < X.length; i++) for (let j = 0; j < X[0].length; j++) if (Y[i][j] < H) { ctx.strokeRect(X[i][j] * sc - 3, Y[i][j] * sc - 3, 6, 6); } };
-    const prev = async (i, j, x, y) => { const r = await api("POST", A("/grid/preview"), i == null ? {rows: [0, H]} : {i, j, x, y, radius: 1, rows: [0, H]});
-      $("gPrev").src = r.png; $("gPrev").style.height = cv.height + "px"; };
-    draw(); prev();
-    cv.onmousedown = ev => { const x = ev.offsetX / sc, y = ev.offsetY / sc; let best = 1e9;
-      for (let i = 0; i < X.length; i++) for (let j = 0; j < X[0].length; j++) { const d = Math.hypot(X[i][j] - x, Y[i][j] - y); if (d < best) { best = d; drag = [i, j]; } }
-      if (best > 15 / sc) drag = null; };
-    let pend = null;
-    cv.onmousemove = ev => { if (!drag) return; const [i, j] = drag; X[i][j] = ev.offsetX / sc; Y[i][j] = ev.offsetY / sc; draw();
-      clearTimeout(pend); pend = setTimeout(() => prev(i, j, X[i][j], Y[i][j]), 80); };
-    cv.onmouseup = async () => { if (!drag) return; const [i, j] = drag; drag = null;
-      await runJob(A("/grid/node"), {i, j, x: X[i][j], y: Y[i][j], radius: 1}, "grid node"); await refresh(); toast("grid node moved"); };
-  });
-  on("sReset", async () => { const i = ST.initial_scale; await apply({left: i.left, right: i.right, type: i.type, backup: i.backup, wrap_side: i.wrap_side, use_hatch: i.use_hatch}); render(); });
-  main("Apply scale — continue", async () => {
-    const bk = $("bL").value !== "" && $("bR").value !== "" ? [+$("bL").value, +$("bR").value] : null;
-    await apply({left: +$("sL").value, right: +$("sR").value, type: $("sT").value, backup: bk, wrap_side: $("wS").value, use_hatch: $("hat").checked}); next();
-  });
-  help(`Red line = current trace. ${NAV}`);
-};
-
-let UPOS = -1;
-function uncertainSpots() {               // where another path is almost as good (yellow): [[r0, r1], ..]
-  return CHK?.disagree || [];
+// Curves -------------------------------------------------------------
+function identLabel(c) {
+  if (c.kind === "single") return "one curve (no tracks found)";
+  if (c.kind === "style") return `${c.cls} line`;
+  if (c.kind === "color+style") return `${c.cls.split(" ")[0]} ink, ${c.cls.split(" ").slice(1).join(" ")} line`;
+  return `${c.cls} ink`;
 }
+function scaleForm(c, k) {               // name / unit / scale / type / backup of one curve: beside the scan and in the scale pop-ups
+  const bk = c.backup || [null, null];
+  return `<div class="cp-grid"><label>name</label><input id="${k}Name" value="${esc(c.name)}"><label>unit</label><input id="${k}Unit" value="${esc(c.unit || "")}">
+      <label>scale</label><span class="pair"><input id="${k}L" type="number" step="any" value="${c.left}"><input id="${k}R" type="number" step="any" value="${c.right}"></span>
+      <label>type</label><select id="${k}T"><option ${c.type === "linear" ? "selected" : ""}>linear</option><option ${c.type === "log" ? "selected" : ""}>log</option></select>
+      <label>backup</label><span class="pair"><input id="${k}BL" type="number" step="any" value="${bk[0] ?? ""}" placeholder="–"><input id="${k}BR" type="number" step="any" value="${bk[1] ?? ""}" placeholder="–"></span></div>`;
+}
+function bindScaleForm(c, k) {
+  $(k + "Apply").onclick = async () => {
+    const bl = $(k + "BL").value, br = $(k + "BR").value;
+    await api("POST", A(`/curves/${c.id}`), {name: $(k + "Name").value, unit: $(k + "Unit").value, left: +$(k + "L").value, right: +$(k + "R").value, type: $(k + "T").value,
+      backup: bl !== "" && br !== "" ? [+bl, +br] : null});
+    toast(`${$(k + "Name").value}: scale applied`); await loadCurves(); await refresh(); if (STEP === "curves") renderCurvesView(false);
+  };
+}
+function renderCurvePanel() {
+  const el = $("curvePanel"); if (!el || !CURV) return; const c = active(); if (!c) return;
+  el.innerHTML = `<div class="cp-head"><label for="curveSel">Curve</label><select id="curveSel">${CURV.curves.map(x => `<option value="${x.id}" ${x.id === CURV.active ? "selected" : ""}>${esc(x.name)} · ${esc(x.track)}</option>`).join("")}</select></div>
+    <div class="cp-id"><span class="chip" style="background:${c.color}"></span>${esc(identLabel(c))} · ${esc(c.track)}${c.coverage != null ? ` · ${Math.round(100 * c.coverage)} % of depth` : ""}</div>
+    ${(c.review || []).length ? `<div class="cp-rev">check: ${esc(c.review.join(", "))}</div>` : ""}
+    ${scaleForm(c, "cp")}
+    <div class="cp-foot">${c.header ? `<span class="note" title="${esc(c.header)}">header: ${esc(c.header.slice(0, 34))}</span>` : `<span class="note">no header row</span>`}<button id="cpApply">Apply</button></div>`;
+  $("curveSel").onchange = () => selectCurve($("curveSel").value);
+  bindScaleForm(c, "cp");
+}
+async function selectCurve(id, highlight = true) {
+  await api("POST", A("/curves/select"), {id}); await loadCurves(); await refresh();
+  if (highlight) LAYERS.hl = true; loadHighlight(); applyLayers();
+  if (STEP === "curves" && CVIEW === "curves") renderCurveList(); if (STEP === "trace") render(false);
+}
+function renderCurveList() {
+  const el = $("curveList"); if (!el || !CURV) return;
+  el.innerHTML = CURV.curves.map(c => `<div class="citem ${c.id === CURV.active ? "on" : ""}" data-id="${c.id}"><span class="chip" style="background:${c.color}"></span><b>${esc(c.name)}</b>
+    <span class="muted">${esc(c.track)} · ${esc(identLabel(c))} · ${fmt(c.left, c.type === "log" ? 1 : 0)}–${fmt(c.right, c.type === "log" ? 0 : 0)}${c.type === "log" ? " log" : ""}${c.unit ? " " + esc(c.unit) : ""}</span>${(c.review || []).length ? ' <span class="warnc">●</span>' : ""}</div>`).join("");
+  el.querySelectorAll(".citem").forEach(d => d.onclick = () => selectCurve(d.dataset.id));
+}
+let PAL = {palette: {}, curve_color: null};
+function renderPalette() {
+  if (!$("palTbl")) return;
+  const names = Object.keys(PAL.palette || {}), css = rgb => `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  $("palTbl").innerHTML = names.map(n => { const rgb = PAL.palette[n], lk = (n === "white" || n === "black");
+    return `<tr data-n="${esc(n)}"><td><span class="pal-swatch" style="background:${css(rgb)}"></span></td><td>${lk ? `<b>${esc(n)}</b>` : `<input data-k="name" value="${esc(n)}">`}</td>
+      <td><input data-k="rgb" value="${rgb.join(", ")}" ${lk ? "readonly" : ""} style="width:110px"></td><td>${lk ? "" : `<button data-del="${esc(n)}" class="danger">✕</button>`}</td></tr>`; }).join("");
+  $("palTbl").querySelectorAll("button[data-del]").forEach(b => b.onclick = async () => { delete PAL.palette[b.dataset.del]; await api("POST", A("/color"), {palette: PAL.palette}); renderPalette(); });
+}
+function readPalette() {
+  const pal = {};
+  document.querySelectorAll("#palTbl tr").forEach(tr => { const old = tr.dataset.n, ni = tr.querySelector("input[data-k=name]"), ri = tr.querySelector("input[data-k=rgb]");
+    const name = ((ni ? ni.value : old) || "").trim(), rgb = (ri ? ri.value : "").split(/[,\s]+/).filter(Boolean).map(Number);
+    if (name && rgb.length === 3 && rgb.every(n => Number.isFinite(n) && n >= 0 && n <= 255)) pal[name] = rgb.map(n => n | 0); });
+  pal.white = pal.white || PAL.palette.white || [255, 255, 255]; pal.black = pal.black || PAL.palette.black || [0, 0, 0]; return pal;
+}
+function popCurves() {                   // up to three scales to show as pop-ups: GR, a resistivity, SP (else the first matched)
+  const mt = (CURV?.curves || []).filter(c => (HLN?.lines || []).some(L => L.curve === c.id)), out = [];
+  for (const re of [/^(GR|CGR|SGR)/i, /^(ILD|RILD|LLD|RT|RES|ILM|RILM|SFL|RLL)/i, /^SP/i]) { const c = mt.find(c => re.test(c.name) && !out.includes(c)); if (c) out.push(c); }
+  for (const c of mt) if (out.length < 3 && !out.includes(c)) out.push(c);
+  return out;
+}
+function hdrSummary() {
+  if (!HLN || !HLN.n_words) return `<span class="note">No header words were read${INFO.features.ocr.ok ? "" : " (OCR is not installed)"}.</span>`;
+  const nm = new Set(HLN.lines.map(L => L.curve).filter(Boolean)).size, mc = HLN.mean_conf;
+  return `<div class="hdr-meter"><i style="width:${Math.round(mc)}%;background:${mc >= 90 ? "#16a34a" : mc >= 70 ? "#d97706" : "#dc2626"}"></i></div>
+    <b>${HLN.n_words}</b> words read · mean confidence <b>${Math.round(mc)} %</b> · ${HLN.n_low ? `<span class="warnc">${HLN.n_low} below 80 %</span>` : "none below 80 %"} · ${nm} of ${CURV.curves.length} curves matched to a header line`;
+}
+async function loadHeader() {
+  try { HDR = await api("GET", A("/header")); HW = (await api("GET", A("/header/words"))).words; HLN = await api("GET", A("/header/lines")); }
+  catch (e) { HW = []; HLN = null; }
+}
+function renderHdrTbl() {
+  const el = $("hdrTbl"); if (!el || !HLN) return;
+  el.innerHTML = `<tr><th></th><th style="width:58px">curve</th><th>as read (type to correct)</th><th style="width:40px">conf</th></tr>` + HLN.lines.map((L, k) => {
+    const cu = CURV.curves.find(c => c.id === L.curve), cl = L.conf >= 90 ? "" : L.conf >= 70 ? "mid" : "low";
+    return `<tr><td><span class="chip" style="background:${cu ? cu.color : "#e2e8f0"}"></span></td><td>${cu ? `<b>${esc(cu.name)}</b>` : '<span class="muted">–</span>'}</td>
+      <td><input class="ocr ${cl}" data-k="${k}" value="${esc(L.text)}"></td><td class="${cl ? "warnc" : "okc"}">${Math.round(L.conf)} %</td></tr>`; }).join("");
+  el.querySelectorAll("input[data-k]").forEach(inp => inp.onchange = async () => {
+    const L = HLN.lines[+inp.dataset.k], parts = inp.value.trim().split(/\s+/).filter(Boolean);
+    const edits = L.words.map((i, j) => ({i, text: parts.length === L.words.length ? parts[j] : (j === 0 ? inp.value.trim() : "")}));
+    await api("POST", A("/header/words"), {track: L.track, edits}); await loadHeader();
+    toast("header line corrected: apply the curve's name or scale in its pop-up"); renderCurvesView(false); });
+}
+function renderPops() {
+  const el = $("scalePops"); el.innerHTML = popCurves().map((c, i) => { const L = HLN.lines.find(q => q.curve === c.id);
+    return `<div class="pop" data-id="${c.id}" data-color="${c.color}" style="border-top-color:${c.color}"><div class="pop-h"><span class="chip" style="background:${c.color}"></span><b>${esc(c.name)}</b>
+      <span class="note">${esc(c.track)} · read ${Math.round(L.conf)} %</span></div>${scaleForm(c, "pp" + i)}<div class="cp-foot"><span class="note" title="${esc(L.text)}">“${esc(L.text.slice(0, 30))}”</span><button id="pp${i}Apply">Apply</button></div></div>`; }).join("");
+  popCurves().forEach((c, i) => bindScaleForm(c, "pp" + i));
+}
+function renderCurvesView(refit = true) {
+  const isCol = !!ST.is_color, f = INFO.features.ocr;
+  $("curvePanel").hidden = CVIEW !== "curves"; $("scalePops").innerHTML = "";
+  document.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.v === CVIEW));
+  if (CVIEW === "curves") {
+    $("cvBody").innerHTML = `<div class="note">Each curve gets its own working image and is traced the same way. Orange dot = name or scale guessed: please check.</div>
+      <div class="list clist" id="curveList"></div>
+      <h3>Header OCR</h3><div class="card" id="hdrSum">${hdrSummary()}</div><div class="row"><button id="toHdr">Check the header and scales</button></div>
+      ${KEYS("Pick a curve (list or the dropdown beside the scan): its ink is shown dark on the grey scan", "Edit name, scale, unit or backup scale beside the scan, then Apply (values re-map, no re-trace)", "Layers (top left): scan, selected curve ink, tracks and grid, traced curves", NAV)}
+      ${isCol ? `<details class="more"><summary>Ink colours</summary><table class="t fit" id="palTbl"></table><div class="row">${tool("sample", "c", "Pick colour")}<button id="palApply">Identify again with these colours</button></div></details>` : ""}`;
+    renderCurveList(); if (isCol) renderPalette();
+    on("toHdr", async () => { CVIEW = "header"; renderCurvesView(); });
+    on("palApply", async () => { const pal = readPalette(); await runJob(A("/color"), {palette: pal, curve_color: active()?.cls?.split(" ")[0] in pal ? active().cls.split(" ")[0] : undefined, confirm: true}, "identify curves");
+      await loadCurves(); await refresh(); loadHighlight(); render(false); });
+  } else {
+    $("cvBody").innerHTML = `<div class="note">The header strip as OCR read it; the log body is covered. Each printed line is boxed (in its curve's colour when it names a curve) with its OCR confidence as a bar: green ≥ 90 %, orange ≥ 70 %, red below. Type over a line to correct it; set a curve's scale in its pop-up.</div>
+      <div class="card" id="hdrSum">${hdrSummary()}</div>
+      <div class="list" style="max-height:330px"><table class="t fit hdr" id="hdrTbl"></table></div>
+      <div class="row">${tool("word", "e", "Edit one word on the scan")}<button id="hRerun" ${off(f)}>Re-run header OCR</button></div>${ocrLine()}`;
+    renderHdrTbl(); if (HLN) renderPops();
+    on("hRerun", async () => { await runJob(A("/header/rerun"), {}, "header OCR"); await loadHeader(); toast("header read again"); renderCurvesView(false); });
+  }
+  bindTools(); if (CVIEW === "header") setMode("word"); else setMode("pan"); if (refit) focusStep(); draw();
+}
+R.curves = async () => {
+  $("stepLead").textContent = CURV?.kind === "style" ? "Every curve was told apart by its line style (solid, dashed, dotted; thin or thick). The scan is shown in grey and the traces in colour; pick a curve to see its ink."
+    : CURV?.kind === "color" ? "Every curve was told apart by its ink colour (and line style where one colour holds two curves). The scan is shown in grey and the traces in colour; pick a curve to see its ink."
+    : "One curve on this scan. Its name and scales sit beside the scan.";
+  $("stepBody").innerHTML = `<div class="seg"><button data-v="curves" id="segCurves">Curves</button><button data-v="header" id="segHeader">Header and scales</button></div><div id="cvBody"></div>`;
+  await loadCurves(); await loadHeader();
+  document.querySelectorAll(".seg button").forEach(b => b.onclick = () => { CVIEW = b.dataset.v; renderCurvesView(); });
+  renderCurvesView(false);
+  main("Curves look right — continue", async () => { CVIEW = "curves"; next(); });
+  help(`Grey scan, coloured traces. Pick a curve to show its ink; <b>Header and scales</b> shows what OCR read. ${NAV}`);
+};
+
+// Trace and fix ------------------------------------------------------
+let UPOS = -1;
 function nextUncertain() {
-  const u = uncertainSpots();
-  if (!u.length) { $("uPos").textContent = "no uncertain spots left"; return; }
-  UPOS = (UPOS + 1) % u.length; const [a, b] = u[UPOS], m = (a + b) / 2, h = Math.max(ST.width * 0.6, (b - a) / 2 + 100);
+  const u = CHK?.disagree || [];
+  if (!u.length) { if ($("uPos")) $("uPos").textContent = "no uncertain spots left"; return; }
+  UPOS = (UPOS + 1) % u.length; const [a, b] = u[UPOS], m = (a + b) / 2, h = Math.max(ST.width * 0.3, (b - a) / 2 + 100);
   fitRows(m - h, m + h); $("uPos").textContent = `${UPOS + 1} of ${u.length}`;
 }
 function renderAnchors() {
@@ -486,118 +561,114 @@ function renderAnchors() {
   $("ancList").innerHTML = (OV?.anchors || []).map((a, i) => `<div>Pin ${i + 1} · row ${a[0].toFixed(0)}<span><a data-go="${a[0]}">go</a><a data-del="${i}" title="remove this pin">✕</a></span></div>`).join("")
     + (OV?.strokes || []).map((st, i) => `<div>Guide ${i + 1} · rows ${st[0][0].toFixed(0)}–${st[st.length - 1][0].toFixed(0)}<span><a data-go="${st[0][0]}">go</a><a data-dels="${i}" title="remove this guide">✕</a></span></div>`).join("")
     || '<span class="note">no pins yet</span>';
-  $("ancList").querySelectorAll("[data-go]").forEach(x => x.onclick = () => fitRows(+x.dataset.go - ST.width * 0.6, +x.dataset.go + ST.width * 0.6));
+  $("ancList").querySelectorAll("[data-go]").forEach(x => x.onclick = () => fitRows(+x.dataset.go - ST.width * 0.3, +x.dataset.go + ST.width * 0.3));
   $("ancList").querySelectorAll("[data-del]").forEach(x => x.onclick = () => fixCall("/fix/unpin", {index: +x.dataset.del}));
   $("ancList").querySelectorAll("[data-dels]").forEach(x => x.onclick = () => fixCall("/fix/unstroke", {index: +x.dataset.dels}));
-  $("trInfo").innerHTML = ST.traced ? `<b>${uncertainSpots().length}</b> place(s) where the line could go another way (yellow) · ${ST.n_anchors} pin(s) · ${OV?.strokes?.length || 0} guide(s)` +
-    (ST.qc ? `<br>vs paired LAS: r = <b>${fmt(ST.qc.r, 3)}</b>, RMSE ${fmt(ST.qc.rmse, 2)}` : "") : "not traced";
+  $("trInfo").innerHTML = ST.traced ? `<b>${(CHK?.disagree || []).length}</b> place(s) where the line could go another way (yellow) · ${ST.n_anchors} pin(s) · ${OV?.strokes?.length || 0} guide(s)` +
+    (ST.qc ? `<br>vs reference LAS: r = <b>${fmt(ST.qc.r, 3)}</b>, RMSE ${fmt(ST.qc.rmse, 2)}` : "") : "not traced";
 }
 function renderCands() {
   const el = $("candList"); if (!el) return; const cs = OV?.candidates || [];
-  el.innerHTML = cs.length ? cs.map(c => `<div class="item"><span style="color:${CAND_COL[c.index % CAND_COL.length]}">■</span> Curve ${c.index + 1}${c.picked ? " <b>(digitized)</b>" : ""} <span class="muted">score ${fmt(c.score, 2)}${c.width ? ` · ${c.width >= 4 ? "heavy" : "thin"} ${c.dashed ? "dashed" : "solid"} (${fmt(c.width, 1)} px)` : ""}</span>
-    ${c.picked ? "" : `<button data-pick="${c.index}">Use this curve</button>`}</div>`).join("") : '<span class="muted">one curve traced</span>';
-  el.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => { try { await runJob(A("/trace/pick"), {index: +b.dataset.pick}, "pick curve"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} });
+  el.innerHTML = cs.length ? cs.map(c => `<div class="item"><span style="color:${CAND_COL[c.index % CAND_COL.length]}">■</span> Line ${c.index + 1}${c.picked ? " <b>(digitized)</b>" : ""} <span class="muted">score ${fmt(c.score, 2)}</span>
+    ${c.picked ? "" : `<button data-pick="${c.index}">Use this line</button>`}</div>`).join("") : '<span class="muted">one line traced</span>';
+  el.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => { try { await runJob(A("/trace/pick"), {index: +b.dataset.pick}, "pick line"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} });
 }
-const CAND_COL = ["#d62728", "#2563eb", "#16a34a", "#9333ea"];
+async function answer(choice) {
+  if (!CUR) return; const row = CUR.row;
+  await fixCall("/checks/answer", {id: CUR.id, choice});
+  const sp = CHK?.spots || []; CPOS = Math.max(0, sp.findIndex(s => s.row > row)); showSpot();
+}
+function showSpot(go = true) {
+  const sp = CHK?.spots || [], el = $("chkCard"); if (!el) return;
+  CUR = sp.length ? sp[Math.min(CPOS, sp.length - 1)] : null;
+  if (!CUR) { el.innerHTML = `<div class="okc"><b>No tricky spots left.</b></div><div class="note">${(CHK?.decisions || []).length} answered.</div>`; draw(); return; }
+  const cols = ["#2563eb", "#f97316", "#16a34a"];
+  el.innerHTML = `<div class="note">Spot ${Math.min(CPOS, sp.length - 1) + 1} of ${sp.length} · ${CUR.kind === "wrap" ? "track edge" : CUR.kind === "hidden" ? "hidden under another curve (null)" : "two lines"} near row ${CUR.row.toFixed(0)}</div>
+    <div class="q"><b>${esc(CUR.question)}</b></div>
+    ${CUR.choices.map((ch, i) => `<div class="row"><button data-ch="${ch.id}" style="width:100%;border-left:6px solid ${cols[i % 3]}">${i + 1} · ${esc(ch.label)}</button></div>`).join("")}
+    <div class="row"><button data-ch="skip">Leave it <span class="kbd">K</span></button><button id="cPrev">◀</button><button id="cNext">▶</button></div>`;
+  el.querySelectorAll("[data-ch]").forEach(b => b.onclick = () => answer(b.dataset.ch));
+  on("cPrev", () => { CPOS = (CPOS - 1 + sp.length) % sp.length; showSpot(); }); on("cNext", () => { CPOS = (CPOS + 1) % sp.length; showSpot(); });
+  if (go) { const h = Math.max(ST.width * 0.3, (CUR.row1 - CUR.row0) / 2 + 150); fitRows(CUR.row - h, CUR.row + h); } draw();
+}
 R.trace = () => {
-  const ml = INFO.features.ml;
-  $("stepLead").textContent = "Click on the real curve wherever the red line is wrong - the line is redrawn through your click.";
-  $("stepBody").innerHTML = `<div class="card" id="trInfo"></div>
-    <h3>How much did that click change?</h3><div class="card" id="prog7"><span class="note">Each click is a pin: the line must pass through it. Fix the worst places first; when clicks stop changing much, you are done.</span></div>
+  const ml = INFO.features.ml, c = active();
+  $("stepLead").textContent = "Click on the real curve wherever its line is wrong: the line is redrawn through your click. Tricky spots are listed below.";
+  $("stepBody").innerHTML = `<div class="row"><label>curve</label><select id="trCurve" style="flex:1">${CURV.curves.map(x => `<option value="${x.id}" ${x.id === CURV.active ? "selected" : ""}>${esc(x.name)} · ${esc(x.track)}</option>`).join("")}</select></div>
+    <div class="card" id="trInfo"></div>
     <div class="tools">${tool("fix", "f", "Fix: click the curve")}${tool("guide", "g", "Guide: drag along it")}${tool("circle", "c", "Circle: re-trace inside")}${tool("node", "d", "Node: drag / force-click")}</div>
-    <div class="row"><label class="muted">Circle radius (px) <input id="circR" type="number" value="60" min="10" max="600" step="10" style="width:5em"></label> <span class="muted">scroll with Shift to resize</span></div>
-    <div class="note" id="toolHint">Fix: click where the line is wrong · drag a green pin to move it · ✕ in the list removes it.<br>Guide (optional): drag a short stroke along a hard stretch; the line follows it there.</div>
-    <div class="row"><button id="tNextU" title="Jump to the next place where another path is almost as good (yellow)">Next place to look <span class="kbd">N</span></button><span class="note" id="uPos"></span></div>
+    <div class="row"><label class="muted">Circle radius (px) <input id="circR" type="number" value="60" min="10" max="600" step="10" style="width:5em"></label><button id="tNextU">Next place to look <span class="kbd">N</span></button><span class="note" id="uPos"></span></div>
+    <h3>Tricky spots</h3><div class="card" id="chkCard">looking for crossings and edges…</div>
+    <h3>How much did that click change?</h3><div class="card" id="prog7"><span class="note">Each click is a pin. When clicks stop changing much, you are done.</span></div>
     <h3>Pins and guides</h3><div class="list" id="ancList"></div>
     <details class="more"><summary>More</summary>
     <h3>Cost map</h3><div class="radio"><label><input type="radio" name="cm" value="conventional" checked> conventional</label>
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="ml" ${ml.ok ? "" : "disabled"}> ML U-Net</label>
       <label class="${ml.ok ? "" : "off"}"><input type="radio" name="cm" value="blend" ${ml.ok ? "" : "disabled"}> blend (conventional + U-Net)</label>${hint(ml)}</div>
-    <div class="row"><label><input type="checkbox" id="tMask"> ignore text and stamps (masks lettering, stamps and handwriting before tracing)</label></div>
-    <h3>Curves in this track</h3><div class="row"><label class="muted">Trace <select id="tNC"><option value="1">1 curve</option><option value="2">2 curves</option><option value="3">3 curves</option></select></label>
-      <span class="note">With 2 or more, each curve is traced and drawn dashed; pick the one to digitize (Z undoes).</span></div><div class="list" id="candList"></div>
+    <div class="row"><label><input type="checkbox" id="tMask"> ignore text and stamps</label></div>
+    <h3>Lines in this working image</h3><div class="row"><label class="muted">Trace <select id="tNC"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option></select></label></div><div class="list" id="candList"></div>
     <h3>Advanced tools</h3><div class="tools">${tool("exclude", "x", "Not this curve")}${tool("wrap", "w", "Backup interval")}${tool("seed", "s", "Seed trace")}</div>
     <div class="row"><button id="tRetrace">Re-trace all</button><button id="tClrA">Clear pins</button><button id="tClrX">Clear exclusions</button><button id="tClrW">Clear intervals</button><button id="tReset" class="danger">Reset trace</button></div>
     </details>
-    ${KEYS("<b>F</b> fix: click on the real curve where the line is wrong (snaps to the ink nearby)", "<b>G</b> guide: drag along a hard stretch of the curve",
-      "Drag a green pin to move it · ✕ removes a pin or guide", "<b>N</b> next place to look (yellow = another path is almost as good)",
-      "<b>Z</b> undo the last change · <b>Esc</b> pan", "Red = trace, orange = off the track edge, green = your pins, blue = your guides")}`;
-  renderAnchors(); renderProgress(); loadChecks();
+    ${KEYS("<b>F</b> fix · <b>G</b> guide · drag a green pin to move it", "<b>N</b> next place to look · <b>1</b>/<b>2</b> answer a tricky spot · <b>K</b> leave it", "<b>Z</b> undo · <b>Esc</b> pan · orange = off the track edge")}`;
+  $("trCurve").onchange = () => selectCurve($("trCurve").value, false);
+  CPOS = 0; renderAnchors(); renderProgress(); loadChecks();
   setTimeout(() => setMode("fix"), 0);
   on("tNextU", nextUncertain);
-  document.querySelectorAll("input[name=cm]").forEach(r => r.onchange = async () => { try { await runJob(A("/trace"), {mode: r.value, force: true}, r.value + " trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} });
-  api("GET", A("/trace/options")).then(o => { const m = $("tMask"); if (m) m.checked = !!o.mask_other; const nc = $("tNC"); if (nc) nc.value = String(o.n_curves || 1); renderCands(); }).catch(() => {});
-  const nc = $("tNC"); if (nc) nc.onchange = async () => { try { await runJob(A("/trace"), {mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true, n_curves: +nc.value}, "trace"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} };
-  const tm = $("tMask"); if (tm) tm.onchange = async () => { try { await runJob(A("/trace"), {mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true, mask_other: tm.checked}, "trace"); await refresh(); CHK = null; loadChecks(); } catch (e) {} };
+  const retrace = async b => { try { await runJob(A("/trace"), Object.assign({mode: document.querySelector("input[name=cm]:checked")?.value || "conventional", force: true}, b), "trace"); await refresh(); CHK = null; loadChecks(); renderCands(); } catch (e) {} };
+  document.querySelectorAll("input[name=cm]").forEach(r => r.onchange = () => retrace({}));
+  api("GET", A("/trace/options")).then(o => { if ($("tMask")) $("tMask").checked = !!o.mask_other; if ($("tNC")) $("tNC").value = String(o.n_curves || 1); renderCands(); }).catch(() => {});
+  $("tNC").onchange = () => retrace({n_curves: +$("tNC").value}); $("tMask").onchange = () => retrace({mask_other: $("tMask").checked});
   on("tRetrace", async () => { await runJob(A("/retrace_all"), {}, "re-trace"); await refresh(); loadChecks(); });
   on("tClrA", async () => { await api("POST", E("/anchors/clear")); await refresh(); loadChecks(); });
   on("tClrX", async () => { await api("POST", E("/exclude/clear")); await refresh(); loadChecks(); });
   on("tClrW", async () => { await api("POST", E("/backup_interval/clear")); await refresh(); renderAnchors(); });
-  on("tReset", async () => { if (!confirm("Reset to a fresh conventional trace (pins, guides, exclusions and intervals removed)?")) return; await runJob(A("/trace/reset"), {}, "reset trace"); document.querySelector("input[name=cm][value=conventional]").checked = true; await refresh(); loadChecks(); });
-  main("Trace looks good — continue", async () => next());
-  help(`<b>F</b> fix · <b>G</b> guide stroke · drag a pin to move it · <b>N</b> next place · <b>Z</b> undo · ${NAV}`);
+  on("tReset", async () => { if (!confirm("Reset to a fresh trace (pins, guides, exclusions and intervals removed)?")) return; await runJob(A("/trace/reset"), {}, "reset trace"); await refresh(); loadChecks(); });
+  main("Traces look good — continue", async () => next());
+  help(`<b>F</b> fix · <b>G</b> guide · <b>N</b> next place · <b>Z</b> undo · ${NAV}`);
 };
 
-async function answer(choice) {
-  if (!CUR) return; const row = CUR.row;
-  await fixCall("/checks/answer", {id: CUR.id, choice}); await loadChecks();
-  const sp = CHK.spots; CPOS = Math.max(0, sp.findIndex(s => s.row > row)); if (CPOS < 0 || !sp.length) CPOS = 0; showSpot();
-}
-function showSpot() {
-  const sp = CHK?.spots || [], el = $("chkCard"); if (!el) return;
-  CUR = sp.length ? sp[Math.min(CPOS, sp.length - 1)] : null;
-  if (!CUR) { el.innerHTML = `<div class="okc"><b>Nothing left to confirm.</b></div><div class="note">${(CHK?.decisions || []).length} answered. Continue when the trace looks right.</div>`; draw(); return; }
-  const cols = ["#2563eb", "#f97316", "#16a34a"];
-  el.innerHTML = `<div class="note">Place ${CPOS + 1} of ${sp.length} · ${CUR.kind === "wrap" ? "edge" : "two lines"} near row ${CUR.row.toFixed(0)}</div>
-    <div class="q"><b>${esc(CUR.question)}</b></div>
-    ${CUR.choices.map((ch, i) => `<div class="row"><button data-ch="${ch.id}" style="width:100%;border-left:6px solid ${cols[i % 3]}">${i + 1} · ${esc(ch.label)}</button></div>`).join("")}
-    <div class="row"><button data-ch="skip">Not sure - leave it <span class="kbd">K</span></button><button id="cPrev">◀ Previous</button><button id="cNext">Next ▶</button></div>`;
-  el.querySelectorAll("[data-ch]").forEach(b => b.onclick = () => answer(b.dataset.ch));
-  on("cPrev", () => { CPOS = (CPOS - 1 + sp.length) % sp.length; showSpot(); }); on("cNext", () => { CPOS = (CPOS + 1) % sp.length; showSpot(); });
-  const h = Math.max(ST.width * 0.5, (CUR.row1 - CUR.row0) / 2 + 150); fitRows(CUR.row - h, CUR.row + h); draw();
-}
-R.checks = async () => {
-  $("stepLead").textContent = "At these places the curve could go two ways; answer each question and the trace follows your answer.";
-  $("stepBody").innerHTML = `<div class="card" id="chkCard">looking for crossings and edges…</div><div class="card" id="prog7"></div>
-    ${KEYS("<b>1</b> / <b>2</b> pick the numbered circle on the scan · <b>K</b> leave it as it is", "Blue circle = choice 1, orange = choice 2 · yellow band = the place in question", "Each answer pins the trace there (saved with the session) · <b>Z</b> undoes", NAV)}`;
-  CPOS = 0; await loadChecks(); showSpot(); renderProgress();
-  main("Done checking — continue", async () => next());
-  help(`<b>1</b>/<b>2</b> answer · <b>K</b> leave it · <b>Z</b> undo · ${NAV}`);
-};
-
-R.qc = async () => {
-  $("stepLead").textContent = "Your traced curve next to the reference LAS file for this scan, so you can see how close it is.";
-  $("stepBody").innerHTML = `<div id="qcm"></div><div class="note" id="qcn"></div>${KEYS("Go back to step 7 to fix the trace; the QC updates automatically", NAV)}`;
-  main("Continue to export", async () => next());
-  const q = await api("GET", E("/qc"));
-  if (!q.available) { $("qcm").innerHTML = `<div class="card">No QC: ${esc(q.reason)}. You can still export.</div>`; return; }
-  const m = q.metrics;
-  $("qcm").innerHTML = `<div class="metrics"><div><b>${fmt(m.r, 3)}</b><span>r</span></div><div><b>${fmt(m.rmse, 2)}</b><span>RMSE</span></div><div><b>${fmt(m.bias, 2)}</b><span>bias</span></div><div><b>${m.n}</b><span>n</span></div></div>`;
-  $("qcn").textContent = `depth shift ${m.shift_ft} ft · ${m.n_anchors} anchors` + (ST.calibration.scale.type === "log" ? " · log scale compared as log10" : "");
-  const lg = q.depth.map((d, i) => [q.ref[i], d]), dg = q.depth.map((d, i) => [q.digitized[i], d]);
-  const xs = q.ref.concat(q.digitized).filter(v => v != null && isFinite(v)), lo = Math.min(...xs), hi = Math.max(...xs);
-  fig(`<div class="ttl">${esc(ST.well)} ${esc(ST.scan.split("/").pop())} ${esc(ST.curve)}</div><div class="legend"><span><i class="swatch" style="background:#000"></i>reference LAS</span><span><i class="swatch" style="background:#d62728"></i>digitized</span></div>
-    <div style="display:flex;gap:6px">${chart({series: [{pts: lg, color: "#000", lw: 0.6}, {pts: dg, color: "#d62728", lw: 0.6, alpha: 0.8}], invertY: true, xlabel: ST.curve, ylabel: "Depth (ft)", w: 260, h: 560})}
-    ${chart({title: `r=${fmt(m.r, 3)} RMSE=${fmt(m.rmse, 2)} n=${m.n}`, series: [{pts: q.ref.map((r, i) => [r, q.digitized[i]]), color: TAB10[0], dots: true, r: 1.2, alpha: 0.3}, {pts: [[lo, lo], [hi, hi]], color: "#000", dash: true, lw: 0.8}], xlabel: "reference LAS", ylabel: "digitized", w: 260, h: 260})}</div>`);
-  help(NAV);
-};
-
-R.export = () => {
-  const f = INFO.features, x = ST.export, hasLas = !!ST.las;
-  $("stepLead").textContent = "Save the curve as a LAS file (plus CSV and a check picture). Nothing is saved until you press a button.";
-  $("stepBody").innerHTML = `<h3>Export folder</h3><div class="row"><input id="xDir" value="${esc(x.folder)}" style="flex:1"><button id="xSet">Set</button></div>
-    <div class="note">Files: <code>${esc(ST.name)}.las</code>, <code>.csv</code> (0.5 ft, same values as the LAS), <code>_qc.png</code>, <code>_session.json</code> (replayable).</div>
-    <h3>Single files</h3><div class="row"><button data-x="las">LAS</button><button data-x="csv">CSV</button>
-      <button data-x="qc_png" ${!f.plot.ok ? off(f.plot) : (!hasLas ? 'disabled title="no paired LAS"' : "")}>QC plot PNG</button><button data-x="session">Session JSON</button><button data-x="training" title="save image + corrected trace to training_data/corrections (for ML training)">Training sample</button></div>${hint(f.plot)}
-    <div class="row"><button id="xOpen" ${x.exists ? "" : 'disabled title="created by the first export"'}>Open export folder</button></div>
-    <h3>Written this session</h3><div class="list" id="xList">${x.written.length ? x.written.map(p => `<div>${esc(p.split(/[\\/]/).pop())}</div>`).join("") : '<span class="note">nothing yet</span>'}</div>
-    ${KEYS("The blue button writes all available files; the single-file buttons write one each", "Re-exporting overwrites files of the same name in this folder")}`;
+// Check and save -----------------------------------------------------
+R.save = async () => {
+  const f = INFO.features, x = ST.export;
+  $("stepLead").textContent = "The scan (left) next to every digitized log (right), row for row. Choose what to plot, then write the figures, the optional CSV and the LAS file.";
+  LOGS = await api("GET", A("/logs"));
+  const ids = LOGS.curves.map(q => q.id); LOGSEL = LOGSEL ? new Set(ids.filter(i => LOGSEL.has(i))) : new Set(ids); if (!LOGSEL.size) LOGSEL = new Set(ids);
+  $("stepBody").innerHTML = `<h3>Plot</h3>
+    <details class="dd" id="logDD"><summary id="logSum"></summary><div class="ddl">${LOGS.curves.map(q => `<label><input type="checkbox" data-log="${q.id}" ${LOGSEL.has(q.id) ? "checked" : ""}><span class="chip" style="background:${q.color}"></span>${esc(q.name)} <span class="muted">${esc(q.track || "")}</span></label>`).join("")}
+      <div class="row"><button id="logAll">All</button><button id="logNone">None</button></div></div></details>
+    <div class="row"><label style="min-width:0"><input type="checkbox" id="showImg" ${SHOWIMG ? "checked" : ""}> show the original image</label></div>
+    <h3>Compare with the reference LAS</h3><div id="cmp"><span class="note">…</span></div>
+    <div class="row"><label class="filebtn">load a reference LAS <input type="file" id="refPick" accept=".las"></label></div>
+    <h3>Outputs</h3><div class="note">Nothing is written until you press a button.</div>
+    <div class="og"><div class="og-h">Figures</div><div class="row"><button data-x="figure" ${off(f.plot)}>Image + logs PNG</button><button data-x="qc_png" ${!f.plot.ok ? off(f.plot) : (!ST.las ? 'disabled title="no reference LAS"' : "")}>QC plot PNG (selected curve)</button></div></div>
+    <div class="og"><div class="og-h">Log data (optional)</div><div class="row"><button data-x="logs_csv">CSV of the plotted logs</button></div></div>
+    <div class="og"><div class="og-h">LAS file</div><div class="row"><label>folder</label><input id="xDir" value="${esc(x.folder)}" style="flex:1"><button id="xSet">Set</button></div>
+      <div class="row"><label>depth step</label><select id="xStep"><option value="0.5" selected>0.5 ft</option><option value="0.25">0.25 ft</option></select></div>
+      <div class="note">One LAS with every curve (values on the step grid, no smoothing): press <b>Save LAS</b> above.</div></div>
+    <details class="more"><summary>More outputs</summary><div class="row"><button data-x="csv">CSV (selected curve)</button><button data-x="session">Session JSON</button><button data-x="training" title="image + corrected trace to training_data/corrections">Training sample</button></div></details>
+    <div class="row"><button id="xOpen" ${x.exists ? "" : 'disabled title="created by the first save"'}>Open folder</button></div>
+    <h3>Written this session</h3><div class="list" id="xList">${x.written.length ? x.written.map(p => `<div>${esc(p.split(/[\\/]/).pop())}</div>`).join("") : '<span class="note">nothing yet</span>'}</div>`;
+  const sum = () => { $("logSum").textContent = `Logs in the plot: ${LOGSEL.size === ids.length ? "all" : LOGSEL.size} of ${ids.length}`; drawLogs(); };
+  document.querySelectorAll("input[data-log]").forEach(cb => cb.onchange = () => { cb.checked ? LOGSEL.add(cb.dataset.log) : LOGSEL.delete(cb.dataset.log); sum(); });
+  const all = v => { document.querySelectorAll("input[data-log]").forEach(cb => { cb.checked = v; }); LOGSEL = new Set(v ? ids : []); sum(); };
+  on("logAll", () => all(true)); on("logNone", () => all(false)); sum();
+  $("showImg").onchange = () => { SHOWIMG = $("showImg").checked; applyLayers(); };
+  const body = () => ({step: +$("xStep").value, ids: [...LOGSEL], image: SHOWIMG});
   const after = async r => { toast("written: " + r.written.map(p => p.split(/[\\/]/).pop()).join(", ")); await refresh(false); render(false); };
-  on("xSet", async () => { await api("POST", A("/export/folder"), {path: $("xDir").value}); await refresh(false); render(false); });
-  document.querySelectorAll("button[data-x]").forEach(b => b.onclick = async () => { try { await after(await api("POST", A("/export/" + b.dataset.x))); } catch (e) {} });
-  on("xOpen", async () => api("POST", "/shell/api/open_folder", {path: ST.export.folder}));
-  main("Export all", async () => { if ($("xDir").value !== x.folder) await api("POST", A("/export/folder"), {path: $("xDir").value}); await after(await api("POST", A("/export/all"))); Shell.complete(8, false); });
-  help("Exports go to the folder above. " + NAV);
+  // the box shows the short folder label; only a typed change is posted (the label is never sent back as a path)
+  on("xSet", async () => { if ($("xDir").value === x.folder) return; await api("POST", A("/export/folder"), {path: $("xDir").value}); await refresh(false); render(false); });
+  document.querySelectorAll("button[data-x]").forEach(b => b.onclick = async () => { try { await after(await api("POST", A("/export/" + b.dataset.x), body())); } catch (e) {} });
+  on("xOpen", async () => api("POST", "/shell/api/open_folder", {path: ST.export.folder_abs}));
+  $("refPick").onchange = async () => { const fp = $("refPick").files[0]; if (!fp) return; await api("POST", A("/reference"), {las: await upload(fp)}); await refresh(false); render(false); };
+  main("Save LAS", async () => { if ($("xDir").value !== x.folder) await api("POST", A("/export/folder"), {path: $("xDir").value});
+    await after(await api("POST", A("/export/las"), {step: +$("xStep").value})); Shell.complete(4, false); });
+  help(`Left: the scan as printed. Right: the digitized logs at the same depth (pan and zoom either side). ${NAV}`);
+  const q = await api("GET", A("/compare"));
+  if (!q.available) { $("cmp").innerHTML = `<div class="card">No reference LAS loaded: you can still save.</div>`; return; }
+  $("cmp").innerHTML = `<div class="note">${esc(q.las)}</div><table class="t fit cmp"><tr><th></th><th>curve</th><th>LAS</th><th>r</th><th>RMSE</th><th>n</th></tr>` + q.rows.map(r =>
+    `<tr data-id="${r.id}" class="${r.id === q.active ? "sel" : ""}"><td><span class="chip" style="background:${r.color}"></span></td><td>${esc(r.name)}</td><td>${esc(r.ref || "–")}</td><td><b>${fmt(r.r, 3)}</b></td><td>${r.r == null ? "–" : fmt(r.rmse, r.log ? 3 : 2) + (r.log ? " log" : "")}</td><td>${r.n ?? "–"}</td></tr>`).join("") + "</table>";
+  $("cmp").querySelectorAll("tr[data-id]").forEach(tr => tr.onclick = async () => { await selectCurve(tr.dataset.id, false); render(false); });
 };
 
 (async () => { INFO = await api("GET", "/app/api/info"); Shell.go(0); })();

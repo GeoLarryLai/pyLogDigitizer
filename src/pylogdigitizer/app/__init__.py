@@ -18,8 +18,14 @@ __all__ = ["create_app", "main"]
 STATIC = Path(__file__).parent / "static"
 
 
-def create_app(project_dir: str = "."):
+LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def create_app(project_dir: str = ".", allowed_hosts=LOCAL_HOSTS):
+    """The app for ``project_dir``. Requests must name a local host (``allowed_hosts``), so a web page
+    cannot reach the app through DNS rebinding; writes must also come from the app's own page."""
     from fastapi import FastAPI
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
     from pylogdigitizer.web_editor.app import build_app
@@ -34,6 +40,7 @@ def create_app(project_dir: str = "."):
     routes.install(app, root, app.state.runner)
     app.mount("/core", app.state.editor)
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="app_static")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
 
     @app.get("/", response_class=HTMLResponse)
     def index():

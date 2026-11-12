@@ -132,7 +132,7 @@ def test_app_grid_routes(warped, tmp_path):
     from pylogdigitizer.app import create_app
     p, true, truth = warped
     d = tmp_path / "example_data" / "WARP_1"; d.mkdir(parents=True); shutil.copy(p, d / "warped.tif")
-    app = create_app(str(tmp_path)); app.state.testing = True; c = TestClient(app)
+    app = create_app(str(tmp_path)); app.state.testing = True; c = TestClient(app, base_url="http://127.0.0.1")
     def wait(r):
         assert r.status_code == 200, r.text
         jid = r.json()["job"]["id"]

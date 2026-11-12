@@ -14,7 +14,7 @@ Legacy confidence of the header proposal:
   low  = anything else -> MANUAL FIX (read the print header, set scale_source: header). Never a
          silent guess. The LAS is never read here; the config value is shown only for comparison.
 
-    python scripts/header_scale_check.py --wells Chitwood_12 ELY_1 --out header_scales.csv
+    python scripts/header_scale_check.py --wells Chitwood_12 MOBIL_12-1 --out header_scales.csv
 """
 import argparse, csv, json, pathlib, sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]

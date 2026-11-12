@@ -19,6 +19,6 @@ def test_mobil_dt_matches_las():
     from pylogdigitizer.las_export import read_las
     R = wf.digitize_curve(DATA / "227233.tif", "track2", (100, 40), 4000, (3997, 5707), width=740,
                           backup=(160, 100), wrap_side="left", use_hatch=False)
-    ref = read_las(DATA / "1044084189.las").df()["DT"].dropna()
+    ref = read_las(DATA / "MOBIL_12-1_227233_3950-5710.las").df()["DT"].dropna()
     c = qc.compare(ref.index.values, ref.values, R["depth"], R["value"])
     assert c["aligned"]["r"] > 0.85 and abs(c["shift_ft"]) <= 2

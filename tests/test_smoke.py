@@ -4,7 +4,7 @@ import importlib
 import numpy as np
 import pytest
 
-MODULES = ['scan_io', 'las_export', 'scan_cleanup', 'track_grid_detection', 'depth_calibration', 'scale_calibration', 'header_ocr', 'curve_tracing', 'scale_wraparound', 'ml_training_data', 'ml_models', 'ml_training', 'ml_batch_digitize', 'qc_compare', 'dataset_profiles', 'web_editor', 'assisted_tracing', 'cli']
+MODULES = ['scan_io', 'las_export', 'scan_cleanup', 'track_grid_detection', 'depth_calibration', 'scale_calibration', 'header_ocr', 'curve_tracing', 'scale_wraparound', 'scan_color', 'curve_ink', 'curve_pairs', 'ml_training_data', 'ml_models', 'ml_training', 'ml_batch_digitize', 'qc_compare', 'dataset_profiles', 'web_editor', 'assisted_tracing', 'cli']
 
 @pytest.mark.parametrize("name", MODULES)
 def test_import(name):

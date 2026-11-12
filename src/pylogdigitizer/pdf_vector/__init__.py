@@ -3,7 +3,7 @@
 """pdf_vector — digitize clean *digital-print* well logs (PDF, and later TIFF).
 
 This path is for digitally exported prints that still carry vector strokes (or
-high-res colour raster): Schlumberger/FORGE-style vertical PDFs and USGS GeoLog
+high-res colour raster): Schlumberger-style vertical PDFs and USGS GeoLog
 Locator horizontal PDFs. Ink-on-paper scans stay on the existing scan workflow;
 do not feed those here.
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pylogdigitizer"
-version = "0.2.1"
+version = "0.3.0"
 description = "Digitize scanned paper well logs and digital-print PDF logs into LAS files"
 readme = "README-pypi.md"
 requires-python = ">=3.10"

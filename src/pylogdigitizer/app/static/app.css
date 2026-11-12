@@ -23,3 +23,57 @@ body{grid-template-areas:"top top top" "rail main side" "bar bar bar" "credits c
 .home-logo{width:130px;max-width:100%;height:auto;display:block;margin:0 auto}
 .app-credits{grid-area:credits;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px 16px;padding:7px 16px;border-top:1px solid var(--line);background:var(--panel);color:var(--mute);font-size:11.5px}
 @media(max-width:600px){.home-logo{width:108px}.app-credits{padding:7px 10px}}
+
+.pal-swatch{display:inline-block;width:28px;height:18px;border:1px solid var(--line);border-radius:4px;vertical-align:middle;box-shadow:inset 0 0 0 1px rgba(0,0,0,.04)}
+#palTbl td{vertical-align:middle}
+#palTbl input{font-size:12px}
+
+/* viewer layers and the selected curve's side panel */
+#layers{position:absolute;top:10px;left:10px;z-index:5;display:flex;gap:10px;align-items:center;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:12.5px;box-shadow:0 3px 12px rgba(0,0,0,.08)}
+#layers label{display:flex;gap:4px;align-items:center;white-space:nowrap;cursor:pointer}
+#curvePanel{position:absolute;top:10px;right:10px;z-index:5;width:270px;background:rgba(255,255,255,.97);border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:12.5px;box-shadow:0 6px 24px rgba(0,0,0,.1)}
+#curvePanel .cp-head{display:flex;gap:8px;align-items:center;margin-bottom:6px} #curvePanel .cp-head label{font-weight:600} #curvePanel select{flex:1;font-size:13px}
+#curvePanel .cp-id{color:var(--mute);margin:2px 0 6px} #curvePanel .cp-rev{color:#b45309;margin:0 0 6px}
+#curvePanel .cp-grid{display:grid;grid-template-columns:52px 1fr;gap:5px 6px;align-items:center} #curvePanel .cp-grid input,#curvePanel .cp-grid select{width:100%;box-sizing:border-box;min-width:0}
+#curvePanel .pair{display:flex;gap:4px} #curvePanel .cp-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:8px}
+.chip{display:inline-block;width:14px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle;border:1px solid rgba(0,0,0,.15)}
+.clist{max-height:300px} .clist .citem{display:block;padding:4px 2px;cursor:pointer;border-radius:5px} .clist .citem.on{background:#e8f1fb} .clist .citem .muted{display:block;margin-left:22px;font-size:11.5px}
+.filebtn{position:relative;overflow:hidden;display:inline-block;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;background:#fff;font-size:12.5px}
+.filebtn input{position:absolute;inset:0;opacity:0;cursor:pointer}
+table.cmp tr[data-id]{cursor:pointer} table.cmp td:first-child{width:18px}
+@media(max-width:900px){#curvePanel{width:220px}#layers{flex-wrap:wrap}}
+table.cmp td:nth-child(2),table.cmp td:nth-child(3){max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* one accent per tab (rail, title, main button, frame), and the working tabs show the scan in greyscale */
+body[data-step=open]{--accent:#475569;--accent-d:#334155} body[data-step=tracks]{--accent:#0d9488;--accent-d:#0f766e}
+body[data-step=curves]{--accent:#7c3aed;--accent-d:#6d28d9} body[data-step=trace]{--accent:#d97706;--accent-d:#b45309}
+body[data-step=save]{--accent:#16a34a;--accent-d:#15803d}
+#main{border-top:4px solid var(--accent)} #side .head{border-top:4px solid var(--accent)} #stepTitle{color:var(--accent)}
+#rail li.cur{background:color-mix(in srgb,var(--accent) 12%,#fff)}
+#main[data-step=tracks]{background:#effcf9} #main[data-step=curves]{background:#f6f3ff} #main[data-step=trace]{background:#fff8eb} #main[data-step=save]{background:#f1fbf4}
+#main #viewer{background:transparent}
+#main[data-step=tracks] #viewer,#main[data-step=curves] #viewer,#main[data-step=trace] #viewer{filter:grayscale(1)}
+#tabBadge{position:absolute;bottom:12px;right:14px;z-index:5;background:var(--accent);color:#fff;font-weight:600;font-size:12px;padding:3px 12px;border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none}
+#tabBadge:empty{display:none}
+#lyState{position:absolute;left:10px;bottom:10px;z-index:5;background:rgba(15,23,42,.82);color:#fff;font-size:12px;padding:4px 10px;border-radius:6px;pointer-events:none}
+/* layer toggles as pills, each lit in its own colour when on */
+#layers label{padding:2px 9px;border:1px solid var(--line);border-radius:999px;background:#fff}
+#layers label:has(#lyScan:checked){background:#e5e7eb;border-color:#9ca3af}
+#layers label:has(#lyHl:checked){background:#1f2937;border-color:#1f2937;color:#fff}
+#layers label:has(#lyGrid:checked){background:#ccfbf1;border-color:#0d9488}
+#layers label:has(#lyTr:checked){background:linear-gradient(90deg,#dbeafe,#fee2e2,#dcfce7);border-color:#64748b}
+/* Curves: view switch, header OCR table and the scale pop-ups */
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:0 0 8px} .seg button{flex:1;border:0;border-radius:0;background:#fff}
+.seg button.on{background:var(--accent);color:#fff;font-weight:600}
+.hdr-meter{height:6px;background:#eceff3;border-radius:3px;overflow:hidden;margin:2px 0 6px} .hdr-meter i{display:block;height:100%}
+table.hdr input.ocr{font:12px ui-monospace,monospace} table.hdr input.ocr.mid{background:#fff7e6;border-color:#f59e0b} table.hdr input.ocr.low{background:#fdecec;border-color:#dc2626}
+#scalePops .pop{position:absolute;z-index:6;width:236px;background:#fff;border:1px solid var(--line);border-top:4px solid;border-radius:9px;padding:8px 10px;font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.25)}
+#scalePops .pop-h{display:flex;align-items:center;gap:4px;margin-bottom:6px} #scalePops .pop-h .note{margin-left:auto}
+#scalePops .cp-grid{display:grid;grid-template-columns:48px 1fr;gap:4px 6px;align-items:center} #scalePops .cp-grid input,#scalePops .cp-grid select{width:100%;min-width:0}
+#scalePops .pair{display:flex;gap:4px} #scalePops .cp-foot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:7px}
+/* Check and save: the scan on the left, the logs on the right at the same depth */
+#main.split #viewer,#main.split #ov{right:50%;width:auto}
+#logPane{position:absolute;top:0;bottom:0;left:50%;right:0;background:#fff;border-left:2px solid var(--accent)} #logCv{width:100%;height:100%;display:block}
+details.dd{border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#fff} details.dd summary{cursor:pointer;font-weight:600}
+details.dd .ddl{max-height:220px;overflow:auto;margin-top:4px} details.dd label{display:flex;align-items:center;gap:4px;margin:2px 0}
+.og{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:6px;padding:4px 8px;margin:6px 0} .og-h{font-weight:600;font-size:12px}

@@ -1,9 +1,0 @@
-# Benchmark reference windows (guided reference traces, training_data/corrections format).
-# GR: existing guided snapshots in training_data/corrections (latest per well).
-# DT/ILD/NPHI/RHOB: drafts (0 anchors) made with AssistedSession, pending Larry's guided review - not frozen.
-gr: {root: training_data/corrections, select: latest_per_well}
-pending:
-  - {well: MOBIL_12-1, scan: 227233.tif, curve: DT, track: track2, scale: [100, 40], backup: [160, 100], wrap_side: left, first_depth: 4000}
-  - {well: WEATHERFORD_B_1, scan: 194289.tif, curve: ILD, track: track2, scale: [0.2, 2000], scale_type: log}
-  - {well: WEATHERFORD_B_1, scan: 194290.tif, curve: NPHI, track: track2, scale: [30, -10]}
-  - {well: Swanson_1, scan: 277931.tif, curve: RHOB, track: track2, scale: [2.0, 3.0], backup: [1.0, 2.0], wrap_side: left}

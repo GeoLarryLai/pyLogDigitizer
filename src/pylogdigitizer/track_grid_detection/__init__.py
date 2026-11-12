@@ -256,29 +256,64 @@ def detect_tracks_by_hgrid(ink: np.ndarray, run: int = 25, rel: float = 0.25, mi
     return out
 
 
-def detect_layout(block_ink: np.ndarray) -> list[dict]:
+def detect_tracks_thin(ink: np.ndarray, border_width: int = 3, boundary_min_frac: float = 0.78) -> list[dict]:
+    """Track layout for digital plots whose track borders are thin (2-4 px) solid lines, e.g.
+    the Eli / Gemini (Warrior) triple-combo prints: borders are the widest continuous lines
+    (>= ``border_width`` px, wider than the 1 px grid). ``boundary_min_frac`` stays at the default
+    rule's 0.78: depth numbers break the depth-column borders of a working image (69-92 % of the rows
+    on STONE 5-19). :func:`workflows.analyze_layout` accepts this layout only when it adds splits to
+    the one that already worked (:func:`only_adds_splits`). Same panel rules as :func:`detect_tracks`."""
+    return detect_tracks(ink, boundary_min_width=border_width, boundary_min_frac=boundary_min_frac)
+
+
+def detect_layout(block_ink: np.ndarray, thin_borders: bool = False) -> list[dict]:
     """Panels of one block: thick-border detection if it yields a valid layout (one depth column
-    between tracks), else the grid-spacing fallback; [] if neither is valid."""
+    between tracks), else the grid-spacing fallback; [] if neither is valid.
+    ``thin_borders``: try :func:`detect_tracks_thin` first (thin-bordered digital plots).
+    Each returned panel carries ``"detector"``: the name of the function that produced it."""
     w = block_ink.shape[1]
-    for fn in (detect_tracks, detect_tracks_by_spacing, detect_tracks_by_hgrid):
+    fns = (detect_tracks, detect_tracks_by_spacing, detect_tracks_by_hgrid)
+    if thin_borders:
+        fns = (detect_tracks_thin,) + fns
+    for fn in fns:
         try:
             tr = fn(block_ink)
         except Exception:
             tr = []
         if _valid_layout(tr, w):
+            for t in tr:
+                t.setdefault("detector", fn.__name__)
             return tr
     return []
 
 
-def same_layout(a: list[dict], b: list[dict], tol: int = 15) -> bool:
-    """Same depth-column position (within ``tol`` px) and same number of tracks."""
+def boundaries(tracks: list[dict]) -> list[float]:
+    """x of every panel edge of a layout (left and right of each track / depth panel)."""
+    return sorted({float(t[k]) for t in tracks for k in ("left", "right")})
+
+
+def only_adds_splits(base: list[dict], new: list[dict], tol: int = 15) -> bool:
+    """True when every panel edge of ``base`` is also an edge of ``new`` (within ``tol`` px): ``new``
+    may split panels of ``base`` but never moves or drops one of its edges."""
+    nb = boundaries(new)
+    return bool(nb) and all(min(abs(x - y) for y in nb) <= tol for x in boundaries(base))
+
+
+def same_depth_column(a: list[dict], b: list[dict], tol: int = 15) -> bool:
+    """One depth column in each layout, at the same position (within ``tol`` px)."""
     da = [t for t in a if t["kind"] == "depth"]; db = [t for t in b if t["kind"] == "depth"]
     return (len(da) == len(db) == 1 and abs(da[0]["left"] - db[0]["left"]) <= tol
-            and abs(da[0]["right"] - db[0]["right"]) <= tol
+            and abs(da[0]["right"] - db[0]["right"]) <= tol)
+
+
+def same_layout(a: list[dict], b: list[dict], tol: int = 15) -> bool:
+    """Same depth-column position (within ``tol`` px) and same number of tracks."""
+    return (same_depth_column(a, b, tol)
             and sum(t["kind"] == "track" for t in a) == sum(t["kind"] == "track" for t in b))
 
 
-def find_probe(ink: np.ndarray, block: int = 800, stride: int | None = None, confirm: int = 2) -> tuple[int, list[dict]]:
+def find_probe(ink: np.ndarray, block: int = 800, stride: int | None = None, confirm: int = 2,
+               thin_borders: bool = False) -> tuple[int, list[dict]]:
     """First block from the top of the sheet (just below the header) whose layout is valid and
     confirmed by the next ``confirm`` blocks. Raises LayoutError if none."""
     stride = stride or block // 2
@@ -286,7 +321,7 @@ def find_probe(ink: np.ndarray, block: int = 800, stride: int | None = None, con
     cache = {}
     def lay(s):
         if s not in cache:
-            cache[s] = detect_layout(ink[s:s + block])
+            cache[s] = detect_layout(ink[s:s + block], thin_borders)
         return cache[s]
     for s in range(0, max(1, h - (confirm + 2) * block), stride):
         tr = lay(s)
@@ -295,7 +330,7 @@ def find_probe(ink: np.ndarray, block: int = 800, stride: int | None = None, con
             # single-block detections are noisy (curves hide grid lines), so allow one miss
             top, miss = s, 0
             for s2 in range(s - stride // 2, -1, -(stride // 2)):
-                t2 = detect_layout(ink[s2:s2 + block])
+                t2 = detect_layout(ink[s2:s2 + block], thin_borders)
                 if t2 and same_layout(tr, t2):
                     top, miss = s2, 0
                 else:

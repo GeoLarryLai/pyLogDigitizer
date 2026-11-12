@@ -11,6 +11,8 @@ extent of ink connected to the re-entry edge (the hatched area or the backup cur
 from __future__ import annotations
 import numpy as np
 
+from pylogdigitizer.track_grid_detection import _runs
+
 
 def detect_wraps(offscale: np.ndarray, min_len: int = 2) -> list[tuple[int, int]]:
     """Intervals [a, b) of consecutive True values (rows where the trace is off-scale)."""
@@ -206,3 +208,66 @@ def hatch_rows(panel: np.ndarray, fy: int, min_runs: int = 3, max_gap: int = 40,
         if b_ - a_ < min_len:
             out[a_:b_] = False
     return out
+
+
+def default_backup(cv: dict) -> tuple:
+    """The usual wrap-around scale: the next full track width (0-150 -> 150-300; log 2-200 -> 200-20000)."""
+    l, r = float(cv["left"]), float(cv["right"])
+    return (r, r * r / l) if cv.get("scale_type") == "log" and l > 0 else (r, r + (r - l))
+
+
+def fill_backups(labels: np.ndarray, names: list, fill_colors, x_range, body_rows, margin: int = 4,
+                 start_px: int = 12, gap_px: int = 8, hole_rows: int = 6, min_rows: int = 6):
+    """Shaded wrap-arounds (colour fill between the backup curve and the left edge).
+
+    Where a curve runs off the right edge these prints draw its backup curve in from the
+    left and shade the area between (yellow for GR, cyan for neutron, ...). Row by row,
+    the right end of a fill that starts at the left edge is where the backup curve is.
+
+    Attribution of a fill colour to a bounding curve colour is heuristic and can mis-assign
+    (for example yellow shading next to a green curve). Every attribution is therefore
+    flagged for review.
+
+    Returns ``(fills, reviews)`` where ``fills`` is ``{curve_colour: (sheet_rows, sheet_x)}``
+    (x is NaN where there is no fill) and ``reviews`` is ``{curve_colour: reason}``.
+    """
+    ids = [names.index(c) for c in (fill_colors or []) if c in names]
+    if not ids:
+        return {}, {}
+    x0, x1 = int(round(x_range[0])) + margin, int(round(x_range[1])) - margin
+    r0, r1 = body_rows
+    lab = labels[r0:r1, x0:x1]
+    fill = np.isin(lab, ids)
+    h = fill.shape[0]
+    ext = np.full(h, np.nan)
+    for i in np.flatnonzero(fill[:, :start_px].any(axis=1)):
+        xs = np.flatnonzero(fill[i])
+        g = np.flatnonzero(np.diff(xs) > gap_px)
+        ext[i] = xs[g[0]] if len(g) else xs[-1]
+    ok = np.isfinite(ext)
+    if ok.sum() < min_rows:
+        return {}, {}
+    idx = np.flatnonzero(ok)
+    for p_, q in zip(idx[:-1], idx[1:]):
+        if 1 < q - p_ <= hole_rows + 1:
+            ext[p_ + 1:q] = np.interp(np.arange(p_ + 1, q), [p_, q], [ext[p_], ext[q]])
+    for a, b in _runs(np.isfinite(ext)):
+        if b - a < min_rows:
+            ext[a:b] = np.nan
+    if not np.isfinite(ext).any():
+        return {}, {}
+    skip = {"white"} | set(fill_colors)
+    counts = {}
+    for i in np.flatnonzero(np.isfinite(ext))[::3]:
+        e = int(ext[i])
+        for c in set(lab[i, e + 1:e + 7].tolist()):
+            if names[c] not in skip:
+                counts[names[c]] = counts.get(names[c], 0) + 1
+    if not counts:
+        return {}, {}
+    color = max(counts, key=counts.get)
+    used = [c for c in (fill_colors or []) if c in names]
+    reason = (f"shading-backup attribution: {'/'.join(used)} fill bounded by {color} "
+              f"({counts[color]} votes) — review the backup values")
+    return {color: (np.arange(r0, r1, dtype=float), ext + x0)}, {color: reason}
+

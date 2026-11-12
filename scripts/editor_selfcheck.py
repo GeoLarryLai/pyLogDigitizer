@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""Headless end-to-end check of the web editor over HTTP (server must be running:
-``pylogdigitizer-app . --port 8765``).
+"""Headless end-to-end check of the editor API over HTTP (server must be running:
+``pylogdigitizer-app . --port 8765``; the editor API is mounted at ``/core``).
 
 For each well/curve preset: open the scan (auto layout + OCR + conventional trace), then a
 *simulated user* adds anchors QC-guided: at the worst 10-ft window of |digitized - LAS| where the
@@ -14,8 +14,8 @@ the main scale for >= 5 ft but the digitized curve is not (missed wraps). r is r
 This exercises the same endpoints the browser uses; the LAS-derived click x is a stand-in for a
 human eye and is NOT an independent accuracy claim.
 
-    python scripts/editor_selfcheck.py --wells USA_A_16 WEATHERFORD_B_1 --curve GR --anchors 10
-Writes outputs/editor_selfcheck/{results.csv, <well>_editor.png, sessions/...}.
+    python scripts/editor_selfcheck.py --wells USA_A_16 --curve GR --anchors 10
+Writes outputs/editor_selfcheck/{results_<curve>.csv, <well>_<curve>_editor.png, <well>_<curve>_history.json}.
 """
 from __future__ import annotations
 import argparse, csv, io, json, math, pathlib, time
@@ -30,7 +30,8 @@ def render_view(c: httpx.Client, sid: str, st: dict, depth_c: float, half_ft: fl
     """Editor-like view from the server's own tiles + overlay (what the browser draws)."""
     from PIL import Image
     cal = st["calibration"]; da = np.array(cal["depth_anchors"], float)
-    row_of = lambda d: float(np.interp(d, da[:, 1], da[:, 0], left=np.nan, right=np.nan))
+    row_of = lambda d: float(np.interp(d, da[:, 1], da[:, 0]))          # clamped to the calibrated range
+    depth_c = float(np.clip(depth_c, da[:, 1].min() + half_ft, da[:, 1].max() - half_ft))
     r0, r1 = int(row_of(depth_c - half_ft)), int(row_of(depth_c + half_ft))
     tr = [t for t in st["tracks"] if t["name"] == (st["section"].get("track") or "")]
     xl, xr = (tr[0]["left"], tr[0]["right"]) if tr else (st["section"]["x0"], st["section"]["x1"])
@@ -39,11 +40,11 @@ def render_view(c: httpx.Client, sid: str, st: dict, depth_c: float, half_ft: fl
     canvas = np.full((r1 - r0, x1 - x0), 255, np.uint8)
     for ty in range(r0 // T, (r1 - 1) // T + 1):
         for tx in range(x0 // T, (x1 - 1) // T + 1):
-            im = np.asarray(Image.open(io.BytesIO(c.get(f"/api/sessions/{sid}/image_files/{lv}/{tx}_{ty}.png").content)))
+            im = np.asarray(Image.open(io.BytesIO(c.get(f"/core/api/sessions/{sid}/image_files/{lv}/{tx}_{ty}.png").content)))
             ya, xa = ty * T, tx * T
             sy0, sy1 = max(r0, ya), min(r1, ya + im.shape[0]); sx0, sx1 = max(x0, xa), min(x1, xa + im.shape[1])
             canvas[sy0 - r0:sy1 - r0, sx0 - x0:sx1 - x0] = im[sy0 - ya:sy1 - ya, sx0 - xa:sx1 - xa]
-    ov = c.get(f"/api/sessions/{sid}/overlay", params=dict(r0=r0, r1=r1, max_points=20000)).json()
+    ov = c.get(f"/core/api/sessions/{sid}/overlay", params=dict(r0=r0, r1=r1, max_points=20000)).json()
     ax.imshow(canvas, cmap="gray", extent=(x0, x1, r1, r0), aspect="auto")
     t = np.array(ov["trace"]) if ov["trace"] else np.zeros((0, 4))
     if len(t):
@@ -72,9 +73,9 @@ def ref_xy(st, las_path, curve, depth_c, half_ft, overlay_tracks):
 def run_case(c: httpx.Client, entry: dict, n_anchors: int, window_ft: float, off_scale_clicks: bool = True,
              max_wraps: int = 3):
     t0 = time.time()
-    st = c.post("/api/sessions", json=dict(scan=entry["scan"], curve=entry["curve"], well=entry["well"], las=entry["las"],
+    st = c.post("/core/api/sessions", json=dict(scan=entry["scan"], curve=entry["curve"], well=entry["well"], las=entry["las"],
                                            settings=entry["settings"]), timeout=900).json()
-    sid = st["sid"]; S = f"/api/sessions/{sid}"
+    sid = st["sid"]; S = f"/core/api/sessions/{sid}"
     t_open = time.time() - t0
     hist = [dict(n=0, r=st["qc"]["r"] if st.get("qc") else None, rmse=st["qc"]["rmse"] if st.get("qc") else None)]
     used, t_clicks = [], []
@@ -124,7 +125,7 @@ def run_case(c: httpx.Client, entry: dict, n_anchors: int, window_ft: float, off
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8765")
-    ap.add_argument("--wells", nargs="+", default=["USA_A_16", "WEATHERFORD_B_1"])
+    ap.add_argument("--wells", nargs="+", default=["USA_A_16"])
     ap.add_argument("--curve", default="GR"); ap.add_argument("--anchors", type=int, default=10)
     ap.add_argument("--window-ft", type=float, default=150.0)
     ap.add_argument("--on-scale-only", action="store_true", help="never click outside the track (no off-scale anchors)")
@@ -135,13 +136,12 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     rows = []
     with httpx.Client(base_url=a.url, timeout=900) as c:
-        cat = c.get("/api/catalog").json()
+        cat = c.get("/core/api/catalog").json()
         for w in a.wells:
             ent = [e for e in cat if e["well"] == w and e["curve"] == a.curve][0]
             sid, st, hist, tm, used = run_case(c, ent, a.anchors, a.window_ft, not a.on_scale_only, a.max_wraps)
-            S = f"/api/sessions/{sid}"
-            las = c.post(S + "/export_las").json(); trn = c.post(S + "/save_training").json(); ses = c.post(S + "/save_session").json()
-            (OUT / f"{w}_{a.curve}{a.tag}_history.json").write_text(json.dumps(dict(hist=hist, timing=tm, las=las, training=trn, session=ses), indent=1))
+            S = f"/core/api/sessions/{sid}"
+            (OUT / f"{w}_{a.curve}{a.tag}_history.json").write_text(json.dumps(dict(hist=hist, timing=tm), indent=1))
             for h in hist:
                 rows.append(dict(well=w, curve=a.curve, **{k: h.get(k) for k in ("n", "r", "rmse", "action")}, **tm))
             # figure: worst anchored window, before/after needs the history; show 2 windows of the final trace

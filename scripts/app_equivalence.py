@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """Headless end-to-end run of the desktop app API vs notebook 01's conventional path (Section A).
 
-    python scripts/app_equivalence.py [WELL] [SCAN]        (default USA_A_16 4342.tif)
+    python scripts/app_equivalence.py [WELL] [SCAN]        (default USA_A_16 4342_crop_3260-4770.tif)
 
 Writes only to a temporary folder; prints whether the LAS/CSV values are identical."""
 import sys, pathlib, tempfile, time
@@ -14,7 +14,7 @@ from pylogdigitizer import workflows as wf
 from pylogdigitizer.las_export import resample, write_las, read_las
 from run_regression import jobs_from_config
 
-well, scan = (sys.argv[1:3] + ["USA_A_16", "4342.tif"][len(sys.argv[1:3]):])[:2]
+well, scan = (sys.argv[1:3] + ["USA_A_16", "4342_crop_3260-4770.tif"][len(sys.argv[1:3]):])[:2]
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="lld_eq_"))
 # --- notebook 01 Section A (cells 2, 4, 10, 14)
 j = [j for j in jobs_from_config(ROOT / "dataset_profiles" / "kansas_kgs_wells.yaml", [well]) if j["scan"] == scan][0]

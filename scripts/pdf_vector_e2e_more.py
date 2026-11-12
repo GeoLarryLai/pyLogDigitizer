@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Digital-print E2E on more FORGE/USGS PDF+LAS pairs → digital_print_more/."""
+"""Digital-print E2E on more USGS PDF+LAS pairs → digital_print_more/."""
 from __future__ import annotations
 
 import json
@@ -24,30 +24,7 @@ OUT = Path("artifacts/pdf_vector")
 VIZ.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
 
-MAIN = DATA_ROOT / "other/UOU_FORGE-78B-32_R1B_TD_SECTION_ConPr_R06_L004Up___QAIT_QSLT_QCNT_QTGC_MAIN-GenericV12.las"
-
 WELLS = [
-    {
-        "id": "forge_porosity",
-        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Porosity_30Jul21_070820.Pdf",
-        "las": MAIN,
-        "alias": {"ECGR_STGC": "GR_STGC", "NPOR": "NPOR", "NPHI": "NPHI", "TNPH": "TNPH",
-                  "SPHI": "SPHI", "TENS": "TENS"},
-    },
-    {
-        "id": "forge_sslt",
-        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_sslt_30Jul21_070718.Pdf",
-        "las": MAIN,
-        "alias": {"ECGR_STGC": "GR_STGC", "GR_STGC": "GR_STGC", "DT": "DT", "DTCO": "DTCO",
-                  "ITT": "ITT", "SP": "SP", "TENS": "TENS", "SPHI": "DT"},  # SPHI us/ft misname→DT family
-    },
-    {
-        "id": "forge_temperature",
-        "pdf": DATA_ROOT / "forge_78B_graphics/UOU_FORGE-78B-32_R1B_TD_SECTION_Temperature_Log_30Jul21_070532.Pdf",
-        "las": MAIN,
-        "alias": {"ECGR_STGC": "GR_STGC", "GR_STGC": "GR_STGC", "MTEM": "GTEM", "CTEM": "CTEM",
-                  "GTEM": "GTEM"},
-    },
     {
         "id": "usgs_18",
         "pdf": DATA_ROOT / "usgs/usgs_18.pdf",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
 """pyLogDigitizer: semi-automatic digitization of raster well-log scans."""
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 
 def _openmp_guard() -> None:
@@ -23,4 +23,4 @@ def _openmp_guard() -> None:
 
 
 _openmp_guard()
-MODULES = ['scan_io', 'las_export', 'scan_cleanup', 'track_grid_detection', 'depth_calibration', 'scale_calibration', 'header_ocr', 'curve_tracing', 'scale_wraparound', 'ml_training_data', 'ml_models', 'ml_training', 'ml_batch_digitize', 'qc_compare', 'dataset_profiles', 'web_editor', 'cli']
+MODULES = ['scan_io', 'las_export', 'scan_cleanup', 'track_grid_detection', 'depth_calibration', 'scale_calibration', 'header_ocr', 'curve_tracing', 'scale_wraparound', 'scan_color', 'curve_ink', 'curve_pairs', 'ml_training_data', 'ml_models', 'ml_training', 'ml_batch_digitize', 'qc_compare', 'dataset_profiles', 'web_editor', 'cli']

@@ -72,6 +72,19 @@ def _compute_ink_dice(
         return (2.0 * inter + 1e-5) / (denom + 1e-5)
 
 
+def save_records_to_npz(records: list[dict[str, Any]], npz_path: str | Path) -> Path:
+    """Write well records (``build_well_record_from_scan``) to an .npz cache readable by
+    :func:`load_records_from_npz`."""
+    out = {}
+    for rec in records:
+        for k, v in rec.items():
+            if k != "well" and v is not None:
+                out[f"{rec['well']}__{k}"] = np.asarray(v)
+    p = Path(npz_path); p.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(p, **out)
+    return p
+
+
 def load_records_from_npz(npz_path: str | Path, well_ids: list[str] | None = None) -> list[dict[str, Any]]:
     """Load precomputed DP-resolution well records from an .npz cache."""
     z = np.load(npz_path)

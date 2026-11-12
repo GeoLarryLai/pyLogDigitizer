@@ -75,7 +75,10 @@ def catalog(root: Path) -> list[dict]:
                                 scale_source=r.get("scale_source", ""), profile=cfg.get("profile", "")))
                 seen.add(scan)
     ex = root / "example_data"
-    for p in sorted(ex.rglob("*.tif")) if ex.exists() else []:
+    extra = {".tif", ".tiff", ".jpg", ".jpeg", ".png", ".pdf"}
+    for p in sorted(ex.rglob("*")) if ex.exists() else []:
+        if p.suffix.lower() not in extra:
+            continue
         rel = p.relative_to(root).as_posix()
         if rel not in seen:
             out.append(dict(id=rel, well=p.parent.name, scan=rel, curve="GR", las=None, settings={}, scale_source="", profile=""))

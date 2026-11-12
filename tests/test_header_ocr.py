@@ -9,7 +9,7 @@ import pytest
 from pylogdigitizer import header_ocr as ho
 
 ROOT = Path(__file__).resolve().parents[1]
-EX = ROOT / "example_data" / "WEATHERFORD_B_1_15-129-20464" / "194290.tif"
+EX = ROOT / "example_data" / "USA_A_16_15-055-20536" / "4342_crop_3260-4770.tif"
 
 
 @pytest.mark.parametrize("text,want", [
@@ -112,9 +112,9 @@ def test_to_runs_and_workflow_requires_confirmation():
     words = [_w("GAMMA", 300, 100), _w("RAY", 400, 100), _w("0", 102, 200), _w("150", 850, 200),
              _w("150", 102, 260), _w("300", 850, 260)]
     props = ho.propose_curves(words, 100, 900, track="track1")
-    runs = ho.to_runs(dict(curves=props, scan="x/194290.tif"))
+    runs = ho.to_runs(dict(curves=props, scan="x/4342_crop_3260-4770.tif"))
     assert runs[0]["curve"] == "GR" and runs[0]["scale"] == [0, 150] and runs[0]["confirmed"] is False
-    assert runs[0]["scan"] == "194290.tif" and runs[0]["scale_source"] == "header_ocr"
+    assert runs[0]["scan"] == "4342_crop_3260-4770.tif" and runs[0]["scale_source"] == "header_ocr"
     with pytest.raises(ValueError, match="not confirmed"):
         wf.digitize_kwargs_from_proposal(props[0])
     kw = wf.digitize_kwargs_from_proposal(props[0], confirmed=True)
@@ -135,7 +135,7 @@ def test_ocr_region_custom_backend():
 
 
 @pytest.mark.skipif(not EX.exists(), reason="example data not present")
-def test_integration_weatherford_header():
+def test_integration_usa_crop_header():
     from pylogdigitizer.depth_calibration import ocr_available
     if not ocr_available():
         pytest.skip("RapidOCR not installed")
@@ -145,8 +145,8 @@ def test_integration_weatherford_header():
     gr = got[("track1", "GR")]
     assert (gr["scale_left"]["value"], gr["scale_right"]["value"]) == (0, 150)
     assert gr["backup"]["value"] == [150, 300] and gr["unit"]["value"] == "GAPI"
-    nphi = got[("track2", "NPHI")]
-    assert (nphi["scale_left"]["value"], nphi["scale_right"]["value"]) == (30, -10)
+    cal = got[("track1", "CALI")]
+    assert (cal["scale_left"]["value"], cal["scale_right"]["value"]) == (6, 16)
     assert all(c["scale_type"]["value"] == "linear" for c in H["curves"])
 
 

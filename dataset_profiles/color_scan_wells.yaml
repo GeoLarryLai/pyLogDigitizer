@@ -1,0 +1,11 @@
+# Colour-raster example well (KGS public Eli Wireline triple combo, 2024). Used by the app
+# catalog and notebook 04. Only facts read off the printed header go here.
+profile: color_scan
+data_dir: example_data
+defaults: {scale_type: linear, use_hatch: false, wrap_side: right}
+wells:
+  - name: STONE_5-19
+    dir: STONE_5-19_15-055-22611
+    las: STONE_5-19_triple_combo_4385-4895.las
+    runs:
+      - {scan: triple_combo_color_crop.tif, curve: GR, track: track1, scale: [0, 150], scale_source: header, note: "Eli Wireline 2024 colour triple combo (digital plot, grey grid); printed Gamma Ray 0-150 GAPI, solid blue"}

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""routes: the pyLogDigitizer steps of the desktop app (/app/api/...).
+"""routes: the pyLogDigitizer desktop app (/app/api/...).
 
 The interactive editing routes are the existing editor's (``web_editor.app``), mounted at
 /core (its API and static files only; the old editor page is not served) and sharing the same sessions, so there is one implementation of every digitizing action
@@ -8,26 +8,67 @@ The interactive editing routes are the existing editor's (``web_editor.app``), m
 app needs on top: background jobs with progress, precomputation, undo snapshots, editable OCR
 tables and the export guard (the editor's own write routes are blocked inside the app).
 
-Steps: 1 load · 2 deskew · 3 section · 4 header OCR · 5 depth · 6 scale · 7 trace · 8 QC · 9 export
+Tabs: Open scan · Tracks and depth · Curves · Trace and fix · Check and save.
+
+On load every curve of the sheet is identified (``curve_identify``: by colour, by line style, or
+both), gets its own working image and its own assisted session, and is traced. The selected
+curve's session is ``e.s``, so every editing route acts on the selected curve; the viewer always
+shows the original scan.
 """
 from __future__ import annotations
 from pathlib import Path
-import csv, importlib.util, json, re, shutil, uuid
+import asyncio, csv, importlib.util, json, re, shutil, tempfile, uuid
+from urllib.parse import unquote, urlsplit
 
 import numpy as np
 from fastapi import Body, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from pylogdigitizer import curve_tracing as ct, depth_calibration as dc
 from pylogdigitizer.assisted_tracing import AssistedSession, SessionError, UNITS
 from pylogdigitizer.depth_calibration import CalibrationError
 from pylogdigitizer.track_grid_detection import LayoutError
 from pylogdigitizer.web_editor.app import _clean, _Entry, catalog, SETTING_KEYS
+from pylogdigitizer.web_editor.tiles import TilePyramid
 from pylogdigitizer.app.shell import ExportGuard, UndoStack
 
+
+def _display_path(path, root: Path) -> str:
+    """Short project-relative path for the UI (never a raw absolute filesystem path)."""
+    raw = Path(path) if path is not None else Path(root)
+    try:
+        resolved = raw.expanduser().resolve()
+        root_r = Path(root).resolve()
+        if resolved == root_r:
+            return root_r.name
+        return str(resolved.relative_to(root_r))
+    except Exception:
+        return raw.name or str(raw)
+
+
+def safe_name(text, default: str = "curve") -> str:
+    """A file-name-safe form of user text (curve, well and scan names): anything but letters, digits,
+    ``.``, ``-`` and ``_`` becomes ``_``, so ``/``, ``\\`` and ``:`` can never nest or escape a path."""
+    return re.sub(r"[^\w.-]+", "_", str(text or "")).strip("._") or default
+
+
+def unique_keys(names) -> list[str]:
+    """One output column per curve: the base mnemonic (before any ``:``), with ``_2``, ``_3`` ... added
+    to repeats so two curves never overwrite each other in the LAS or the logs CSV."""
+    seen: dict[str, int] = {}; out = []
+    for n in names:
+        base = str(n).split(":")[0].strip() or "CURVE"; k = base; i = 1
+        while k in seen:
+            i += 1; k = f"{base}_{i}"
+        seen[k] = 1; out.append(k)
+    return out
+
+
+UPLOAD_MAX = 1 << 30          # 1 GiB per uploaded file
 EXPECTED = (SessionError, CalibrationError, LayoutError, ValueError, FileNotFoundError)
 SNAP_ATTRS = ("dm", "depth_anchors", "depth_checks", "depth_source", "section", "pan", "width", "_prob_map", "anchors",
-              "excluded", "excluded_ids", "anchor_window_ft", "backup_intervals", "values", "wraps", "scale", "track",
+              "excluded", "excluded_ids", "anchor_window_ft", "backup_intervals", "hidden_intervals", "values", "wraps", "scale", "track",
               "trace_kw", "first_depth", "label_interval", "errors", "depth_section", "depth_sections",
               "strokes", "decisions", "change_log", "_spots", "grid_lattice", "_pan_raw", "grid_fit")
 # editor routes that write files: blocked in the app (the Export step is the only writer)
@@ -41,7 +82,7 @@ def features(root: Path) -> dict:
     has = lambda m: importlib.util.find_spec(m) is not None
     from pylogdigitizer import ocr_engines
     eng = ocr_engines.status(); ocr = eng["default"] is not None
-    model = next((p for p in (root / "models" / "kansas_gr_unet.pt", root / "models" / "kansas_kgs" / "unet.pt") if p.exists()), None)
+    model = next((p for p in (root / "models" / "kansas_kgs" / "unet.pt",) if p.exists()), None)
     ml_pkgs = has("torch")                     # ml_models is plain torch (no smp needed)
     return dict(
         ocr=dict(ok=ocr, engine=eng["default"], engines={k: eng[k] for k in ocr_engines.ENGINES},
@@ -60,6 +101,7 @@ def snapshot(e: _Entry):
         v = getattr(s, k)
         d[k] = dict(v) if isinstance(v, dict) else (list(v) if isinstance(v, list) else v)
     d["T"] = dict(s.T) if s.T is not None else None
+    d["curve_id"] = getattr(e, "active", None)
     d["app"] = json.loads(json.dumps(e.app.get("header_rows")))
     h = getattr(e, "header", None)          # header OCR words/proposals (small): word corrections are undoable
     d["header"] = (dict(h, tracks={k: dict(t, words=[dict(w) for w in t["words"]], curves=list(t["curves"])) for k, t in h["tracks"].items()},
@@ -68,6 +110,8 @@ def snapshot(e: _Entry):
 
 
 def restore(e: _Entry, d) -> None:
+    if d.get("curve_id") and d["curve_id"] != getattr(e, "active", None):
+        select_curve(e, d["curve_id"])
     s = e.s
     for k in SNAP_ATTRS:
         setattr(s, k, d[k])
@@ -96,13 +140,212 @@ def header_rows(h: dict | None) -> list[dict]:
     return rows
 
 
+def header_lines(words: list[dict], curves: list[dict]) -> list[dict]:
+    """Group header OCR words (sheet coords, per track) into printed lines and match each line to the
+    curve whose header label it is. Returns [{track, text, conf, x0, y0, x1, y1, words: [i], curve}]."""
+    norm = lambda t: re.sub(r"\s+", " ", str(t or "")).strip().lower()
+    lines = []
+    for tr in sorted({w["track"] for w in words}):
+        ws = sorted((w for w in words if w["track"] == tr), key=lambda w: (w["y0"] + w["y1"]) / 2)
+        cur = []
+        for w in ws:
+            yc, h = (w["y0"] + w["y1"]) / 2, max(1.0, w["y1"] - w["y0"])
+            if cur and abs(yc - np.mean([(q["y0"] + q["y1"]) / 2 for q in cur])) > 0.6 * h:
+                lines.append(cur); cur = []
+            cur.append(w)
+        if cur:
+            lines.append(cur)
+    out = []
+    for ln in lines:
+        ln = sorted(ln, key=lambda w: w["x0"])
+        out.append(dict(track=ln[0]["track"], text=" ".join(str(w["text"]) for w in ln),
+                        conf=float(min(w["conf"] or 0 for w in ln)), x0=min(w["x0"] for w in ln), y0=min(w["y0"] for w in ln),
+                        x1=max(w["x1"] for w in ln), y1=max(w["y1"] for w in ln), words=[w["i"] for w in ln], curve=None))
+    for c in curves:                     # each curve's header label -> the line with the most shared tokens
+        lab = set(norm(c.get("header")).split())
+        best = max(((len(lab & set(norm(L["text"]).split())) / max(1, len(lab)), k) for k, L in enumerate(out)
+                    if L["curve"] is None and L["track"] == c.get("track")), default=(0, None))
+        if lab and best[1] is not None and best[0] >= 0.5:
+            out[best[1]]["curve"] = c["id"]
+    return out
+
+
+def scale_fraction(v: np.ndarray, left: float, right: float, typ: str) -> np.ndarray:
+    """Values -> position across their track (0 = left edge, 1 = right edge) on the printed scale."""
+    v = np.asarray(v, float)
+    if typ == "log":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return (np.log10(v) - np.log10(left)) / (np.log10(right) - np.log10(left))
+    return (v - left) / (right - left)
+
+
 def wrap_side(left, right, bl, br) -> str:
     return "right" if abs(bl - right) <= abs(br - left) else "left"
+
+
+def line_header_rows(rows: list) -> list:
+    """Editable header table rows from :func:`propose_curves_from_lines` (printed names, not CWLS)."""
+    import uuid as _uuid
+    out = []
+    for c in rows:
+        bk = c.get("backup")
+        review = ["scale"] if c.get("check") or None in (c.get("left"), c.get("right")) else []
+        out.append(dict(id=_uuid.uuid4().hex[:6], origin="ocr-lines", track=c.get("track"),
+                        mnemonic=c.get("name"), unit=c.get("unit") or "",
+                        left=c.get("left"), right=c.get("right"), type=c.get("scale_type") or "linear",
+                        backup_left=bk[0] if bk else None, backup_right=bk[1] if bk else None,
+                        color=c.get("color") or "black", review=sorted(set(review)),
+                        confidence=1.0 if not review else 0.5,
+                        label=c.get("label") or "", points=[], check=c.get("check") or ""))
+    return out
+
+
+def color_header_rows(H: dict) -> list:
+    """Header table for a colour scan: the line parser's rows (printed names kept) when they
+    read at least as many clean scales as the default proposals, else the default rows."""
+    line_rows = line_header_rows(H.get("line_curves") or [])
+    def_rows = header_rows(H)
+    clean = lambda rows: sum(1 for r in rows if r.get("left") is not None and r.get("right") is not None
+                             and not r.get("check") and "scale" not in (r.get("review") or []))
+    if line_rows and clean(line_rows) >= clean(def_rows):
+        return line_rows
+    return def_rows or line_rows
+
+
+# ---------------------------------------------------------------- curves (one session per identified curve)
+class MaskPyramid(TilePyramid):
+    """DZI tiles of one curve's ink as a transparent dark layer (the highlight layer: dark grey on the\n    greyscale scan, so it stands out without competing with the coloured traces)."""
+
+    def __init__(self, mask: np.ndarray, rgb=(17, 17, 17), tile_size: int = 512):
+        import cv2
+        mask = cv2.dilate(mask.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0   # thin pen lines stay visible zoomed out
+        super().__init__(np.where(mask, 255, 0).astype(np.uint8), tile_size)
+        self.rgb = rgb
+
+    def tile_png(self, lv: int, col: int, row: int) -> bytes:
+        import io
+        from PIL import Image
+        img = self.level(min(lv, self.max_level))
+        a = img[row * self.tile:(row + 1) * self.tile, col * self.tile:(col + 1) * self.tile]
+        if a.size == 0:
+            raise KeyError((lv, col, row))
+        t = np.zeros(a.shape + (4,), np.uint8)
+        t[..., :3] = self.rgb
+        t[..., 3] = np.clip(a.astype(np.int32) * 3, 0, 235).astype(np.uint8)
+        b = io.BytesIO(); Image.fromarray(t, "RGBA").save(b, "PNG", compress_level=1)
+        return b.getvalue()
+
+
+def curve_public(c: dict) -> dict:
+    s = c.get("s")
+    out = {k: c.get(k) for k in ("id", "track", "cls", "kind", "pattern", "color", "coverage", "name", "unit",
+                                 "left", "right", "type", "backup", "header", "review", "ref")}
+    if s is not None:
+        out.update(left=s.scale["left"], right=s.scale["right"], type=s.scale["type"], backup=s.scale.get("backup"),
+                   wrap_side=s.scale.get("wrap_side"), traced=s.T is not None, n_anchors=len(s.anchors),
+                   errors={k: v for k, v in s.errors.items() if k in ("wrap_note", "layout_note", "section", "depth")})
+    return out
+
+
+def select_curve(e: _Entry, cid: str) -> None:
+    c = next((c for c in getattr(e, "curves", []) if c["id"] == cid), None)
+    if c is None:
+        raise HTTPException(404, f"unknown curve {cid}")
+    e.active = cid
+    e.s = c["s"]
+    e.app["name"] = f"{safe_name(e.base.well, 'well')}_{safe_name(Path(e.app['scan_stem']).stem, 'scan')}_{safe_name(c['name'])}"
+    e.hl = None
+
+
+def curve_series(c: dict):
+    """(depth, value) of one curve: the session values, with off-scale stretches on identified
+    curves handled as in the notebooks (wrapped -> backup scale, clipped -> null)."""
+    s = c["s"]
+    if c.get("kind") == "single":
+        R = s.result()
+        return np.asarray(R["depth"], float), np.asarray(R["value"], float)
+    from pylogdigitizer.workflows import color_curve_values
+    return color_curve_values(s)
+
+
+def logs_table(e, ids=None, step: float = 0.5) -> dict:
+    """Every traced curve (or ``ids``) on its depth grid, with the sheet row of each depth and the
+    position across its track on the printed scale: the Check and save plot and the logs figure,
+    drawn height-aligned with the scan."""
+    from pylogdigitizer.curve_identify import track_ranges
+    from pylogdigitizer.las_export import resample
+    L = e.base.L
+    tracks = [dict(name=k, left=float(v[0]), right=float(v[1])) for k, v in track_ranges(L).items()] if L is not None else []
+    out, d_lo, d_hi = [], np.inf, -np.inf
+    for c in e.curves:
+        s = c["s"]
+        if (ids is not None and c["id"] not in ids) or s.T is None or s.dm is None:
+            continue
+        R = s.result(); g, v = resample(*curve_series(c), step)
+        dd, rr = np.asarray(R["depth"], float), np.asarray(R["rows"], float)
+        o = np.argsort(dd); row = np.interp(g, dd[o], rr[o])
+        sc = s.scale
+        out.append(dict(id=c["id"], name=c["name"], color=c["color"], track=c.get("track"), unit=c.get("unit") or "",
+                        type=sc["type"], left=sc["left"], right=sc["right"], depth=g, value=v, row=row,
+                        frac=scale_fraction(v, sc["left"], sc["right"], sc["type"])))
+        d_lo, d_hi = min(d_lo, g[0]), max(d_hi, g[-1])
+    ticks = []
+    if out:
+        ref = max(out, key=lambda q: len(q["depth"]))
+        for d in np.arange(np.ceil(d_lo / 10) * 10, d_hi + 1e-6, 10.0):
+            ticks.append([float(d), float(np.interp(d, ref["depth"], ref["row"])), bool(d % 50 == 0)])
+    return dict(tracks=tracks, curves=out, ticks=ticks, width=int(e.tiles.w), height=int(e.tiles.h))
+
+
+def match_ref_curve(name: str, columns) -> str | None:
+    """LAS column for a curve name: the same mnemonic, else the same canonical mnemonic."""
+    cols = list(columns)
+    if name in cols:
+        return name
+    if re.match(r"TRACK\d+_", name):                     # unnamed curve: nothing to compare with yet
+        return None
+    from pylogdigitizer.header_ocr import CURVES, match_mnemonic
+    want = match_mnemonic(name)[0]
+    if want is None:
+        return None
+    aliases = {a.upper() for a in CURVES[want]["aliases"]}          # exact aliases first (RLL3 keeps its digit)
+    hits = [c for c in cols if c.upper() in aliases] or [c for c in cols if match_mnemonic(c) == (want, 1.0)]
+    return hits[0] if hits else None
+
+
+def grid_lines(ink: np.ndarray, tracks: dict, body_rows) -> dict:
+    """Printed grid of the sheet for the grid layer: vertical lines per track (x) and horizontal
+    lines (rows), from long straight ink runs."""
+    r0, r1 = int(body_rows[0]), int(body_rows[1])
+    out = dict(v={}, h=[])
+    for t, (xl, xr) in tracks.items():
+        x0, x1 = int(xl) + 3, int(xr) - 3
+        if x1 - x0 < 10:
+            continue
+        col = ink[r0:r1, x0:x1].mean(0)
+        xs = np.flatnonzero(col > 0.6)
+        groups = np.split(xs, np.flatnonzero(np.diff(xs) > 2) + 1) if len(xs) else []
+        out["v"][t] = [float(x0 + g.mean()) for g in groups if len(g)]
+    if tracks:
+        xl, xr = next(iter(tracks.values()))
+        row = ink[r0:r1, int(xl) + 3:int(xr) - 3].mean(1)
+        ys = np.flatnonzero(row > 0.6)
+        groups = np.split(ys, np.flatnonzero(np.diff(ys) > 2) + 1) if len(ys) else []
+        out["h"] = [float(r0 + g.mean()) for g in groups if len(g)]
+    return out
+
+
+def _palette_public(pal: dict) -> dict:
+    return {str(k): [int(v[0]), int(v[1]), int(v[2])] for k, v in pal.items()}
 
 
 def install(app, root: Path, runner) -> None:
     sessions: dict = app.state.editor.state.sessions
     guard_default = root / "outputs" / "app"
+    # one temporary folder per app run for uploads and rotated copies, removed when the process exits
+    run_dir = Path(tempfile.mkdtemp(prefix="pyLogDigitizer_run_")).resolve(); app.state.run_dir = run_dir
+    import atexit
+    atexit.register(shutil.rmtree, run_dir, True)
 
     def get(sid: str) -> _Entry:
         if sid not in sessions:
@@ -125,46 +368,129 @@ def install(app, root: Path, runner) -> None:
         j = runner.submit(title, body, sync=getattr(app.state, "sync_jobs", False))
         return dict(job=j.as_dict())
 
+    def export_state(e: _Entry) -> dict:
+        """Export folder for the page: ``folder`` is the short label shown, ``folder_abs`` the real path
+        (posted back by Open folder; the label is never turned back into a path)."""
+        ex = e.guard.state(); ex["folder_abs"] = ex["folder"]; ex["folder"] = _display_path(ex["folder"], root)
+        return ex
+
+    def locked_push(e: _Entry, label: str) -> None:
+        with e.lock:
+            push_undo(e, label)
+
     def state(e: _Entry) -> dict:
         s = e.s; st = app.state.editor.state.state_fn(e)
-        st.update(sid=e.sid, undo=e.undo.labels()[-8:], export=e.guard.state(), header_choice=e.app.get("header_choice"),
+        ex = export_state(e)
+        st.update(sid=e.sid, undo=e.undo.labels()[-8:], export=ex, header_choice=e.app.get("header_choice"),
                   initial_scale=e.app["initial_scale"], name=e.app["name"])
-        st.update(depth_sections=s.depth_sections, depth_section=s.depth_section)
+        st.update(depth_sections=e.base.depth_sections, depth_section=e.base.depth_section, rotate=e.app.get("rotate", 0.0),
+                  active=getattr(e, "active", None), kind=(getattr(e, "ident", None) or {}).get("kind", "single"),
+                  n_curves=len(getattr(e, "curves", [])), scan_name=e.app.get("scan_stem"), las=e.base.las_path and _display_path(e.base.las_path, root),
+                  skew=[float(a) for a in e.base.L.skew_deg] if e.base.L is not None else [])
+        col = e.app.get("color") or {}
+        st.update(is_color=bool(col.get("is_color")),
+                  color=dict(is_color=bool(col.get("is_color")), confirmed=bool(col.get("confirmed")),
+                             palette=_palette_public(col["palette"]) if col.get("palette") else {},
+                             curve_color=col.get("curve_color"),
+                             chromatic=[n for n in (col.get("palette") or {}) if n not in ("white", "black")],
+                             body_rows=list(col["body_rows"]) if col.get("body_rows") else None,
+                             reviews=col.get("reviews") or {},
+                             source=col.get("source")))
         if s.dm is not None and s.depth_anchors:
             a = np.array(s.depth_anchors, float)
             st["residuals"] = _clean(np.c_[a[:, 1], dc.residuals(s.depth_anchors, s.dm)].tolist()) if len(a) > 2 else []
         return st
 
-    # middleware: undo snapshots before editor edits; block editor file writes inside the app
+    # middleware: same-origin writes only; undo snapshots before editor edits; block editor file writes inside the app
     @app.middleware("http")
     async def guard_mw(request: Request, call_next):
         path = request.url.path
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin is not None and urlsplit(origin).netloc != request.headers.get("host"):
+                return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         if path.startswith("/core") and not path.startswith(("/core/api/", "/core/static/")):
             return JSONResponse({"detail": "not part of the app (the old editor UI: run `pylogdigitizer editor`)"}, status_code=404)
         if BLOCKED.match(path):
             return JSONResponse({"detail": "writing files is done in the Export step of the app"}, status_code=403)
         m = MUTATING.match(path)
-        if m and request.method in ("POST", "DELETE") and m.group(1) in sessions:
-            e = sessions[m.group(1)]
-            with e.lock:
-                push_undo(e, m.group(2).split("/")[0])
+        e = sessions.get(m.group(1)) if m else None
+        if e is not None and request.method in ("POST", "DELETE") and hasattr(e, "undo"):   # app sessions only
+            # the lock may be held for seconds by a running job: wait in a worker thread, never on the event loop
+            await run_in_threadpool(locked_push, e, m.group(2).split("/")[0])
         return await call_next(request)
 
     @app.get("/app/api/info")
     def info():
-        return dict(project=str(root), catalog=catalog(root), features=features(root))
+        return dict(project=_display_path(root, root), catalog=catalog(root), features=features(root))
 
-    # ---------------- step 1: load (precomputes everything the later steps open with)
-    @app.post("/app/api/open")
-    def open_scan(body: dict = Body(...)):
-        def p(rel):
-            if not rel:
-                return None
-            q = (root / rel).resolve() if not Path(rel).is_absolute() else Path(rel)
-            if not q.exists():
-                raise HTTPException(404, f"not found: {rel}")
-            return q
-        scan, las = p(body.get("scan")), p(body.get("las"))
+    # ---------------- Open scan: load, identify every curve, trace each on its own working image
+    def resolve(rel):
+        """A scan or LAS path from the page: project-relative, or a file uploaded in this run."""
+        if not rel:
+            return None
+        q = Path(str(rel)).expanduser(); q = (q if q.is_absolute() else root / q).resolve()
+        if not any(q == b or q.is_relative_to(b) for b in (root, run_dir)):
+            raise HTTPException(400, f"path outside the project: {rel}")
+        if not q.exists():
+            raise HTTPException(404, f"not found: {rel}")
+        return q
+
+    def identify_into(e: _Entry, j, n0: int, N: int, palette=None) -> None:
+        """Identify every curve (colour / line style / both), build its working image and its
+        assisted session, trace it. Without a track layout the loaded session is the one curve."""
+        from pylogdigitizer import curve_identify as ci
+        from pylogdigitizer.workflows import open_color_curve
+        s = e.base
+        if s.L is None or not s.L.track_names:
+            e.curves = [dict(id="c1", track=s.track, cls="", kind="single", pattern="", color="#d62728", coverage=None,
+                             name=s.curve, unit="", header="", review=[], ref=None, s=s)]
+            select_curve(e, "c1")
+            return
+        col = e.app["color"]; rgb = None
+        if col.get("is_color"):
+            from pylogdigitizer.scan_io import load_rgb
+            rgb = load_rgb(col["source"])
+        j.progress(n0, N, "identifying the curves by colour and line style")
+        ID = ci.identify_curves(s.scan_path, s.L, e.header, rgb=rgb, palette=palette or col.get("palette"))
+        e.ident = ID
+        if rgb is not None:
+            col.update(palette=ID["palette"], names=list(ID["names"]), body_rows=list(ID["body_rows"]))
+        e.work_dir = Path(tempfile.mkdtemp(prefix="work_", dir=run_dir))
+        st = e.app["settings"]; preset = ci.trace_preset(ID)
+        preset.update({k: v for k, v in (st.get("trace_kw") or {}).items() if k not in preset})
+        cols = None
+        if s.las_path:
+            from pylogdigitizer.las_export import read_las
+            cols = list(read_las(s.las_path).df().columns)
+        curves = ID["curves"]
+        N = max(N, n0 + 2 + len(curves))
+        for k, c in enumerate(curves):
+            j.progress(n0 + 1 + k, N, f"tracing {c['name']} ({c['cls']}, {c['track']}) on its own working image")
+            from pylogdigitizer.curve_ink import save_ink_tif
+            tif = save_ink_tif(ci.working_image(ID, c), e.work_dir / f"working_{c['id']}.tif")
+            cv = dict(name=c["name"], track=c["track"], left=c["left"], right=c["right"], scale_type=c["type"],
+                      backup=c.get("backup"))
+            if c["name"] == e.app["curve"]:           # the preset of the catalogue entry (dataset profile)
+                for key in ("backup", "wrap_side", "use_hatch"):
+                    if st.get(key) is not None:
+                        cv[key] = tuple(st[key]) if key == "backup" else st[key]
+                if st.get("scale") is not None:
+                    cv["left"], cv["right"] = st["scale"]
+            scaled = "scale" not in c["review"]
+            cs = open_color_curve(tif, cv, s.well, dict(preset), x_range=ID["tracks"][c["track"]],
+                                  first_depth=s.first_depth, label_interval=s.label_interval,
+                                  auto_backup=scaled, las_path=s.las_path)
+            c["ref"] = match_ref_curve(c["name"], cols) if cols else None
+            cs.ref_curve = c["ref"]
+            c["s"] = cs
+        e.curves = curves
+        want = next((c for c in curves if c["name"] == e.app["curve"]), curves[0] if curves else None)
+        if want is None:
+            raise ValueError("no curves found on this scan")
+        select_curve(e, want["id"])
+
+    def build_entry(scan: Path, las, body: dict, j, sid: str | None = None, rotate: float = 0.0) -> _Entry:
         st = dict(body.get("settings") or {}); kw = {k: st[k] for k in SETTING_KEYS if k in st}
         for k in ("scale", "backup", "x_range", "rows"):
             if kw.get(k) is not None:
@@ -173,39 +499,365 @@ def install(app, root: Path, runner) -> None:
         if not feats["ocr"]["ok"]:
             kw["use_ocr"] = False
         curve = body.get("curve") or "GR"; well = body.get("well") or scan.parent.name
+        src = scan
+        if rotate:
+            src = rotated_copy(scan, rotate)
+        N0 = 6
+        s = AssistedSession(src, curve=curve, well=well, las_path=las, auto_layout=bool(body.get("auto_layout", True)), **kw)
+        s.open(progress=lambda i, n, m: j.progress(i, N0 + 4, m))
+        sid = sid or uuid.uuid4().hex[:10]; e = _Entry(s); e.sid = sid; e.undo = UndoStack(); e.base = s
+        e.guard = ExportGuard(guard_default / f"{safe_name(s.well, 'well')}_{safe_name(scan.stem, 'scan')}")
+        e.app = dict(name="", scan_stem=scan.name, curve=curve, initial_scale=dict(s.scale), header_rows=None, header_ocr=None,
+                     header_choice=None, settings=st, label_values=None, rotate=float(rotate), body=dict(body),
+                     color=dict(is_color=False, confirmed=False, source=str(src)))
+        labels = names = rgb = None
+        try:
+            from pylogdigitizer.scan_io import is_color_scan, load_rgb
+            from pylogdigitizer.scan_color import suggest_palette, classify_colors
+            if is_color_scan(src):
+                rgb = load_rgb(src)
+                pal = suggest_palette(rgb)
+                labels, names = classify_colors(rgb, pal)
+                e.app["color"] = dict(is_color=True, confirmed=True, source=str(src), palette=pal,
+                                      curve_color=None, body_rows=None, reviews={})
+        except Exception as ex:
+            s.errors["color"] = f"{type(ex).__name__}: {ex}"
+        e.tiles = TilePyramid(rgb if rgb is not None else s.ink)
+        if s.L is not None:
+            e.app["label_values"] = list(s.L._ocr_values) if s.L._ocr_values is not None else None
+        j.progress(N0 - 1, N0 + 4, "header OCR (curve names, units, scales)" if feats["ocr"]["ok"] else "header OCR skipped (no OCR engine installed)")
+        if feats["ocr"]["ok"] and s.L is not None:
+            try:
+                from pylogdigitizer import header_ocr
+                e.header = header_ocr.propose_header(s.scan_path, layout=s.L, labels=labels, label_names=names)
+                e.app["header_ocr"] = header_rows(e.header); e.app["header_rows"] = json.loads(json.dumps(e.app["header_ocr"]))
+            except Exception as ex:      # header OCR is advisory: never blocks the workflow
+                s.errors["header"] = f"{type(ex).__name__}: {ex}"
+        if s.pan is not None and (s.L is None or not s.L.track_names):
+            s.auto_trace()
+        n_cur = 0
+        if s.L is not None and s.L.track_names:
+            n_cur = 12
+        identify_into(e, j, N0, N0 + 4 + n_cur)
+        if e.app["color"].get("is_color"):
+            e.app["color"]["curve_color"] = next((c["cls"] for c in e.curves if c["id"] == e.active), None)
+        e.tiles.level(max(0, e.tiles.max_level - 6))
+        return e
+
+    def rotated_copy(scan: Path, deg: float) -> Path:
+        """The scan turned by ``deg`` degrees (white fill), written to a temporary file."""
+        import cv2
+        from pylogdigitizer.scan_io import load_rgb
+        img = load_rgb(scan)
+        h, w = img.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), -float(deg), 1.0)
+        out = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=(255, 255, 255))
+        d = Path(tempfile.mkdtemp(prefix="rotated_", dir=run_dir)); q = d / (scan.stem + ".tif")
+        from PIL import Image
+        Image.fromarray(out).save(q)
+        return q
+
+    @app.post("/app/api/open")
+    def open_scan(body: dict = Body(...)):
+        scan, las = resolve(body.get("scan")), resolve(body.get("las"))
+        if scan is None:
+            raise HTTPException(400, "no scan given")
 
         def work(j):
-            N = 7
-            s = AssistedSession(scan, curve=curve, well=well, las_path=las, auto_layout=bool(body.get("auto_layout", True)), **kw)
-            s.open(progress=lambda i, n, m: j.progress(i, N, m))
-            sid = uuid.uuid4().hex[:10]; e = _Entry(s); e.sid = sid; e.undo = UndoStack()
-            base = f"{s.well}_{Path(s.scan_path).stem}_{curve.replace(':', '_')}"
-            e.guard = ExportGuard(guard_default / base)
-            e.app = dict(name=base, initial_scale=dict(s.scale), header_rows=None, header_ocr=None, header_choice=None,
-                         settings=st, label_values=None)
-            j.progress(3, N, "conventional trace of the section")
-            if s.pan is not None:
-                s.auto_trace()
-            j.progress(4, N, "depth-label values for review")
-            if s.L is not None:
-                e.app["label_values"] = list(s.L._ocr_values) if s.L._ocr_values is not None else None
-            j.progress(5, N, "header OCR (track names, units, scales)" if feats["ocr"]["ok"] else "header OCR skipped (no OCR engine installed)")
-            if feats["ocr"]["ok"] and s.L is not None:
-                try:
-                    from pylogdigitizer import header_ocr
-                    e.header = header_ocr.propose_header(s.scan_path, layout=s.L)
-                    e.app["header_ocr"] = header_rows(e.header); e.app["header_rows"] = json.loads(json.dumps(e.app["header_ocr"]))
-                except Exception as ex:      # header OCR is advisory: never blocks the workflow
-                    s.errors["header"] = f"{type(ex).__name__}: {ex}"
-            j.progress(6, N, "image tiles")
-            e.tiles.level(max(0, e.tiles.max_level - 6))
-            sessions[sid] = e
-            return dict(sid=sid)
+            e = build_entry(scan, las, body, j)
+            sessions[e.sid] = e
+            return dict(sid=e.sid, n_curves=len(e.curves))
         return job(None, "Load scan", work)
+
+    @app.post("/app/api/upload")
+    async def upload(request: Request):
+        """Raw file body with a URL-encoded ``X-Filename`` header (the page's file picker): kept in this
+        run's temporary folder (removed when the app stops) and opened from there. Streams to disk and
+        refuses files over ``app.state.upload_max`` bytes (1 GiB). Returns the path to pass to /open."""
+        name = Path(unquote(request.headers.get("x-filename") or "scan.tif")).name
+        if Path(name).suffix.lower() not in (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".pdf", ".las"):
+            raise HTTPException(400, f"unsupported file type: {name}")
+        cap = int(getattr(app.state, "upload_max", UPLOAD_MAX))
+        d = run_dir / "uploads"; d.mkdir(exist_ok=True)
+        q = d / name; tmp = d / (name + ".part"); n = 0
+        try:
+            with open(tmp, "wb") as fh:
+                async for chunk in request.stream():
+                    n += len(chunk)
+                    if n > cap:
+                        raise HTTPException(413, f"file too large (limit {cap // (1 << 20)} MB)")
+                    fh.write(chunk)
+            tmp.replace(q)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return dict(path=str(q), name=name, size=q.stat().st_size)
+
+    @app.post("/app/api/{sid}/rotate")
+    def rotate(sid: str, body: dict = Body(...)):
+        """{deg}: turn the scan by a small extra angle (after the automatic deskew) and analyse it again."""
+        e = get(sid); deg = float(body.get("deg", 0.0))
+        if abs(deg) > 10:
+            raise HTTPException(400, "rotate by at most 10 degrees")
+        b = dict(e.app["body"]); scan = resolve(b.get("scan"))
+
+        def work(j):
+            n = build_entry(scan, e.base.las_path, b, j, sid=sid, rotate=deg)
+            sessions[sid] = n
+            return dict(sid=sid, rotate=deg)
+        return job(e, "Rotate", work)
+
+    # ---------------- curves: list, select, edit the side panel, layers
+    @app.get("/app/api/{sid}/curves")
+    def curves_get(sid: str):
+        e = get(sid)
+        with e.lock:
+            kind = (getattr(e, "ident", None) or {}).get("kind", "single")
+            return _clean(dict(kind=kind, active=e.active, curves=[curve_public(c) for c in e.curves]))
+
+    @app.post("/app/api/{sid}/curves/select")
+    def curves_select(sid: str, body: dict = Body(...)):
+        e = get(sid)
+        with e.lock:
+            select_curve(e, str(body.get("id")))
+            if e.app["color"].get("is_color"):
+                e.app["color"]["curve_color"] = next(c["cls"] for c in e.curves if c["id"] == e.active)
+            return state(e)
+
+    @app.post("/app/api/{sid}/curves/{cid}")
+    def curves_edit(sid: str, cid: str, body: dict = Body(...)):
+        """{name?, unit?, left, right, type, backup: [l, r] | null, wrap_side?}: the side panel.
+        Values are re-mapped at once (no re-trace)."""
+        e = get(sid)
+        c = next((c for c in e.curves if c["id"] == cid), None)
+        if c is None:
+            raise HTTPException(404, f"unknown curve {cid}")
+        s = c["s"]
+        try:
+            l, r = float(body.get("left", s.scale["left"])), float(body.get("right", s.scale["right"]))
+            bk = body.get("backup", s.scale.get("backup"))
+            bk = [float(bk[0]), float(bk[1])] if bk not in (None, [], "") and None not in bk and "" not in bk else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, "scale values must be numbers")
+        typ = body.get("type", s.scale["type"])
+        if typ not in ("linear", "log"):
+            raise HTTPException(400, "type must be linear or log")
+        with e.lock:
+            push_undo(e, f"curve {c['name']}")          # snapshot under the lock: never a half-done trace
+            s.set_scale(l, r, typ, backup=bk, wrap_side=body.get("wrap_side") or s.scale.get("wrap_side") or "right")
+            if body.get("name"):
+                c["name"] = s.curve = str(body["name"]).strip()
+                if s.las_path:
+                    from pylogdigitizer.las_export import read_las
+                    c["ref"] = s.ref_curve = match_ref_curve(c["name"], read_las(s.las_path).df().columns)
+            if "unit" in body:
+                c["unit"] = str(body.get("unit") or "")
+            c["review"] = [x for x in c.get("review", []) if not x.startswith(("name", "scale"))]
+            if e.active == cid:
+                select_curve(e, cid)
+        return _clean(curve_public(c))
+
+    @app.get("/app/api/{sid}/traces")
+    def traces(sid: str):
+        """Every curve's trace (sheet coords, decimated) for the traced-curves layer."""
+        e = get(sid); out = []
+        with e.lock:
+            for c in e.curves:
+                s = c["s"]
+                if s.T is None:
+                    continue
+                ov = s.overlay(max_points=2500)
+                out.append(dict(id=c["id"], name=c["name"], color=c["color"], trace=[[r, x] for r, x, *_ in ov["trace"]]))
+            return _clean(dict(traces=out, active=e.active))
+
+    @app.get("/app/api/{sid}/logs")
+    def logs(sid: str):
+        """All traced curves for the Check and save plot: per curve the sheet row and the position across
+        its track of every 0.5 ft sample (null where off scale), plus 10 ft depth ticks (row, major)."""
+        e = get(sid)
+        with e.lock:
+            T = logs_table(e)
+        for c in T["curves"]:
+            c.update(depth=c["depth"].tolist(), row=np.round(c["row"], 1).tolist(), frac=np.round(c["frac"], 4).tolist(),
+                     value=c["value"].tolist())
+        return _clean(T)
+
+    @app.get("/app/api/{sid}/grid_lines")
+    def grid_layer(sid: str):
+        e = get(sid); s = e.base
+        if s.L is None:
+            return dict(available=False, v={}, h=[], tracks=[])
+        if getattr(e, "grid_cache", None) is None:
+            from pylogdigitizer.curve_identify import track_ranges
+            tr = track_ranges(s.L)
+            body = (getattr(e, "ident", None) or {}).get("body_rows") or (int(s.L.probe_row or 0), s.L.ink.shape[0])
+            e.grid_cache = dict(available=True, tracks=[dict(name=k, left=v[0], right=v[1]) for k, v in tr.items()],
+                                **grid_lines(s.L.ink, tr, body))
+        return _clean(e.grid_cache)
+
+    def highlight(e: _Entry):
+        if getattr(e, "hl", None) is None or e.hl[0] != e.active:
+            c = next(c for c in e.curves if c["id"] == e.active)
+            ID = getattr(e, "ident", None)
+            if ID is None or c.get("kind") == "single":
+                s = c["s"]; m = np.zeros(e.tiles.h * e.tiles.w, bool).reshape(e.tiles.h, e.tiles.w)
+                if s.T is not None:
+                    ov = s.overlay(max_points=20000)
+                    for r, x, *_ in ov["trace"]:
+                        rr, xx = int(r), int(x)
+                        m[max(0, rr - 2):rr + 3, max(0, xx - 2):xx + 3] = True
+            else:
+                from pylogdigitizer.curve_identify import curve_mask
+                m = curve_mask(ID, c)
+            e.hl = (e.active, MaskPyramid(m))
+        return e.hl[1]
+
+    @app.get("/app/api/{sid}/highlight/{cid}.dzi")
+    def highlight_dzi(sid: str, cid: str):
+        from fastapi.responses import Response
+        e = get(sid)
+        if cid != e.active:
+            raise HTTPException(404, "highlight is served for the selected curve")
+        return Response(highlight(e).dzi_xml(), media_type="application/xml")
+
+    @app.get("/app/api/{sid}/highlight/{cid}_files/{level}/{name}")
+    def highlight_tile(sid: str, cid: str, level: int, name: str):
+        from fastapi.responses import Response
+        e = get(sid)
+        if cid != e.active:
+            raise HTTPException(404, "highlight is served for the selected curve")
+        c, r = name.split(".")[0].split("_")
+        try:
+            return Response(highlight(e).tile_png(level, int(c), int(r)), media_type="image/png",
+                            headers={"Cache-Control": "max-age=3600"})
+        except KeyError:
+            raise HTTPException(404, "no tile")
+
+    # ---------------- Check and save: every curve against the reference LAS
+    @app.post("/app/api/{sid}/reference")
+    def reference_set(sid: str, body: dict = Body(...)):
+        """{las}: load a reference LAS (project-relative or an uploaded file) for the comparison."""
+        e = get(sid); q = resolve(body.get("las"))
+        from pylogdigitizer.las_export import read_las
+        try:
+            cols = list(read_las(q).df().columns)
+        except Exception as ex:
+            raise HTTPException(400, f"not a readable LAS file: {ex}")
+        with e.lock:
+            e.base.las_path = str(q)
+            for c in e.curves:
+                c["s"].las_path = str(q)
+                c["ref"] = c["s"].ref_curve = match_ref_curve(c["name"], cols)
+        return dict(las=_display_path(q, root), matched={c["name"]: c["ref"] for c in e.curves})
+
+    @app.get("/app/api/{sid}/compare")
+    def compare(sid: str):
+        e = get(sid)
+        with e.lock:
+            return _compare(e)
+
+    def _compare(e: _Entry) -> dict:
+        las = e.base.las_path
+        if not las:
+            return dict(available=False, reason="no reference LAS loaded")
+        from pylogdigitizer import qc_compare as qc
+        from pylogdigitizer.las_export import read_las, resample
+        df = read_las(las).df().sort_index()
+        rows, plot = [], None
+        for c in e.curves:
+            s = c["s"]
+            ref = c.get("ref") or match_ref_curve(c["name"], df.columns)
+            row = dict(id=c["id"], name=c["name"], ref=ref, color=c["color"], unit=c.get("unit"))
+            if ref is None or s.T is None or s.dm is None:
+                rows.append(row); continue
+            d, v = curve_series(c)
+            rs = df[ref].dropna(); rs = rs[rs > -999]
+            rd, rv, tv = rs.index.values.astype(float), rs.values.astype(float), v
+            if s.scale["type"] == "log":
+                rv = np.log10(np.clip(rv, 1e-3, None)); tv = np.log10(np.clip(v, 1e-3, None))
+            m = qc.compare(rd, rv, d, tv)
+            row.update(r=m["aligned"].get("r"), rmse=m["aligned"].get("rmse"), bias=m["aligned"].get("bias"),
+                       n=m["aligned"].get("n", int(np.isfinite(m["test_aligned"]).sum()) if len(m["grid"]) else 0),
+                       shift_ft=m["shift_ft"], log=s.scale["type"] == "log")
+            rows.append(row)
+            if c["id"] == e.active:
+                g, vv = resample(d, v, 0.5)
+                plot = dict(depth=g.tolist(), digitized=vv.tolist(),
+                            ref=np.interp(g, rs.index.values, rs.values, left=np.nan, right=np.nan).tolist(), name=c["name"], ref_name=ref)
+        return _clean(dict(available=True, las=_display_path(las, root), rows=rows, plot=plot, active=e.active))
 
     @app.get("/app/api/{sid}/state")
     def get_state(sid: str):
         return state(get(sid))
+
+    # ---------------- colour palette (colour scans / raster PDFs only)
+    @app.get("/app/api/{sid}/color")
+    def color_get(sid: str):
+        e = get(sid)
+        st = state(e)
+        return _clean(st.get("color") or dict(is_color=False, confirmed=False, palette={}, curve_color=None,
+                                              chromatic=[], body_rows=None, reviews={}))
+
+    @app.post("/app/api/{sid}/color/sample")
+    def color_sample(sid: str, body: dict = Body(...)):
+        """Sample the original colour scan at sheet (row, x). Used to add a swatch by clicking."""
+        e = get(sid)
+        src = (e.app.get("color") or {}).get("source") or e.s.scan_path
+        from pylogdigitizer.scan_io import load_rgb
+        rgb = load_rgb(src)
+        r, x = int(round(float(body["row"]))), int(round(float(body["x"])))
+        if not (0 <= r < rgb.shape[0] and 0 <= x < rgb.shape[1]):
+            raise HTTPException(400, f"sample ({r}, {x}) outside the scan {rgb.shape[1]}×{rgb.shape[0]}")
+        pix = rgb[r, x, :3]
+        return dict(rgb=[int(pix[0]), int(pix[1]), int(pix[2])], row=r, x=x)
+
+    @app.post("/app/api/{sid}/color")
+    def color_set(sid: str, body: dict = Body(...)):
+        """Edit or confirm the palette.
+
+        Body: ``{palette?: {name: [r,g,b]}, curve_color?: str, confirm?: bool}``.
+        ``white`` and ``black`` are required. Confirming identifies the curves again with this
+        palette (one working image and session per curve) and selects a ``curve_color`` curve.
+        """
+        e = get(sid)
+        col = e.app.setdefault("color", dict(is_color=True, confirmed=False, source=e.base.scan_path, palette={}, reviews={}))
+        if body.get("palette") is not None:
+            pal = {}
+            for name, rgb in body["palette"].items():
+                nm = str(name).strip()
+                if not nm:
+                    raise HTTPException(400, "palette names must be non-empty")
+                try:
+                    pal[nm] = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+                except Exception:
+                    raise HTTPException(400, f"bad RGB for {nm!r}")
+            if "white" not in pal or "black" not in pal:
+                raise HTTPException(400, "palette needs 'white' and 'black' entries")
+            col["palette"] = pal
+            col["is_color"] = True
+        if body.get("curve_color"):
+            if body["curve_color"] not in (col.get("palette") or {}):
+                raise HTTPException(400, f"curve_color {body['curve_color']!r} is not in the palette")
+            col["curve_color"] = body["curve_color"]
+        if not body.get("confirm"):
+            return color_get(sid)
+
+        def work(j):
+            from pylogdigitizer.scan_color import require_palette
+            require_palette(col.get("palette") or {})
+            push_undo(e, "palette")
+            if e.base.L is None or not e.base.L.track_names:     # no track layout: keep the loaded session
+                col.update(confirmed=True)
+                return dict(confirmed=True, curve_color=col.get("curve_color"), n_curves=len(e.curves))
+            identify_into(e, j, 0, 14, palette=col["palette"])
+            want = col.get("curve_color")
+            pick = next((c for c in e.curves if c["cls"] == want and c["name"] == e.app["curve"]), None) or \
+                next((c for c in e.curves if c["cls"] == want), None)
+            if pick is not None:
+                select_curve(e, pick["id"])
+            col.update(confirmed=True, curve_color=next(c["cls"] for c in e.curves if c["id"] == e.active))
+            e.grid_cache = None
+            return dict(confirmed=True, curve_color=col["curve_color"], n_curves=len(e.curves))
+        return job(e, "Confirm colour palette", work)
 
     # ---------------- step 2/3 figures: deskew angles, followed boundaries, depth labels
     @app.get("/app/api/{sid}/layout")
@@ -265,6 +917,20 @@ def install(app, root: Path, runner) -> None:
                for nm, t in ((e.header or {}).get("tracks") or {}).items() for i, w in enumerate(t["words"])]
         return _clean(dict(words=out))
 
+    @app.get("/app/api/{sid}/header/lines")
+    def header_lines_get(sid: str):
+        """Header OCR as printed lines (words grouped per track), each matched to its curve, with the
+        header strip rows: what the Curves tab shows so the reading can be checked and corrected."""
+        e = get(sid)
+        words = header_words(sid)["words"]
+        lines = header_lines(words, [curve_public(c) for c in e.curves])
+        bottom = max((w["y1"] for w in words), default=None)
+        if e.s.L is not None and e.s.L.probe_row:
+            bottom = max(bottom or 0, float(e.s.L.probe_row))
+        conf = [w["conf"] for w in words if w.get("conf") is not None]
+        return _clean(dict(lines=lines, strip=[0.0, bottom], n_words=len(words),
+                           mean_conf=float(np.mean(conf)) if conf else None, n_low=int(sum(q < 80 for q in conf))))
+
     @app.post("/app/api/{sid}/header/words")
     def header_words_edit(sid: str, body: dict = Body(...)):
         """{track, edits: [{i, text}]}: correct OCR words (typed text = full confidence), re-fit that track's
@@ -278,7 +944,9 @@ def install(app, root: Path, runner) -> None:
             header_ocr.apply_word_edits(e.header, str(body["track"]), list(body.get("edits") or []))
         except (KeyError, IndexError) as ex:
             e.undo.pop(); raise HTTPException(400, str(ex))
-        e.app["header_ocr"] = header_rows(e.header); e.app["header_rows"] = json.loads(json.dumps(e.app["header_ocr"]))
+        # a colour scan's header was read line by line: keep those rows (as Re-run OCR does)
+        rows = color_header_rows(e.header) if e.header.get("parse") == "lines" else header_rows(e.header)
+        e.app["header_ocr"] = rows; e.app["header_rows"] = json.loads(json.dumps(rows))
         L = e.s.L
         if L is not None and body.get("save", True):
             try:
@@ -319,23 +987,54 @@ def install(app, root: Path, runner) -> None:
         def work(j):
             from pylogdigitizer import header_ocr
             j.progress(0, 1, "reading the track headers")
-            e.header = header_ocr.propose_header(e.s.scan_path, layout=e.s.L)
-            e.app["header_ocr"] = header_rows(e.header); e.app["header_rows"] = json.loads(json.dumps(e.app["header_ocr"]))
+            col = e.app.get("color") or {}
+            src = col.get("source") or e.s.scan_path
+            kw = {}
+            if col.get("confirmed") and col.get("palette"):
+                from pylogdigitizer.scan_io import load_rgb
+                from pylogdigitizer.scan_color import classify_colors
+                rgb = load_rgb(src)
+                labels, names = classify_colors(rgb, col["palette"])
+                kw = dict(parse="lines", labels=labels, label_names=names)
+            L_hdr = getattr(e, "header_layout", None) if kw else None
+            e.header = header_ocr.propose_header(src, layout=L_hdr or e.s.L, **kw)
+            rows = color_header_rows(e.header) if kw.get("parse") == "lines" else header_rows(e.header)
+            e.app["header_ocr"] = rows; e.app["header_rows"] = json.loads(json.dumps(rows))
             return dict(n=len(e.app["header_rows"]))
         return job(e, "Header OCR", work)
+
+    def propagate_depth(e: _Entry, j, n0: int, N: int) -> None:
+        """Give every curve session the depth anchors of the loaded scan, then re-cut and re-trace it."""
+        b = e.base
+        for k, c in enumerate(getattr(e, "curves", [])):
+            cs = c["s"]
+            if cs is b or not b.depth_anchors:
+                continue
+            j.progress(n0 + k, N, f"re-tracing {c['name']} with the new depth scale")
+            cs.set_depth_anchors(b.depth_anchors)
+            sec = cs.section
+            if sec is not None and sec["kind"] == "box":
+                cs.set_section(box=(sec["x0"], sec["x1"]), rows=tuple(sec["rows"]))
+            elif sec is not None:
+                cs.set_section(track=sec["track"])
+            if cs.pan is not None:
+                cs.auto_trace()
 
     # ---------------- step 5a: which log section (only when the sheet holds several and the header does not say)
     @app.post("/app/api/{sid}/depth_section")
     def depth_section(sid: str, body: dict = Body(...)):
-        """{index: n} - use log section n for the depth scale, then re-cut and re-trace the track."""
+        """{index: n} - use log section n for the depth scale, then re-cut and re-trace every curve."""
         e = get(sid); push_undo(e, "depth section")
         def work(j):
-            s = e.s; j.progress(0, 2, "depth calibration of the chosen section")
+            s = e.base; N = 2 + len(e.curves); j.progress(0, N, "depth calibration of the chosen section")
             s.set_depth_section(int(body["index"]))
             e.app["label_values"] = list(s.L._ocr_values) if s.L._ocr_values is not None else None
             if s.track in s.L.track_names and (s.section is None or s.section["kind"] == "track"):
-                j.progress(1, 2, "tracing the chosen section")
-                s.set_section(track=s.section["track"] if s.section else s.track); s.errors.pop("section", None); s.auto_trace()
+                j.progress(1, N, "tracing the chosen section")
+                s.set_section(track=s.section["track"] if s.section else s.track); s.errors.pop("section", None)
+                if s is e.s:
+                    s.auto_trace()
+            propagate_depth(e, j, 2, N)
             return dict(ok=True)
         return job(e, "Depth section", work)
 
@@ -347,7 +1046,7 @@ def install(app, root: Path, runner) -> None:
         e = get(sid); push_undo(e, "depth")
         mode = body.get("mode", "auto")
         def work(j):
-            s = e.s; j.progress(0, 2, "depth calibration")
+            s = e.base; N = 2 + len(e.curves); j.progress(0, N, "depth calibration")
             if mode == "labels":
                 pts = [(float(r), float(d)) for r, d in body.get("labels", []) if d is not None and d != ""]
                 s.set_depth_anchors(pts)
@@ -362,11 +1061,13 @@ def install(app, root: Path, runner) -> None:
                 fd, li = body.get("first_depth"), body.get("label_interval")
                 s.set_depth_labels(None if fd in ("", None) else float(fd), None if li in ("", None) else float(li))
                 e.app["label_values"] = list(s.L._ocr_values) if s.L is not None and s.L._ocr_values is not None else None
-            if s.pan is not None and s.section and s.section["kind"] == "track" and s.L is not None:
-                j.progress(1, 2, "re-tracing with the new depth scale")
-                s.set_section(track=s.section["track"]); s.auto_trace()
-            elif s.pan is not None:
-                j.progress(1, 2, "re-tracing"); s.auto_trace()
+            if s is e.s:                                   # the loaded session is the curve (no track layout)
+                if s.pan is not None and s.section and s.section["kind"] == "track" and s.L is not None:
+                    j.progress(1, N, "re-tracing with the new depth scale")
+                    s.set_section(track=s.section["track"]); s.auto_trace()
+                elif s.pan is not None:
+                    j.progress(1, N, "re-tracing"); s.auto_trace()
+            propagate_depth(e, j, 1, N)
             return dict(ok=True)
         return job(e, "Depth calibration", work)
 
@@ -381,11 +1082,18 @@ def install(app, root: Path, runner) -> None:
 
     @app.post("/app/api/{sid}/calib/edges")
     def calib_edges(sid: str, body: dict = Body(...)):
-        """{left_dx, right_dx}: move the track boundaries (sheet px), re-cut and re-trace."""
+        """{left_dx, right_dx}: move the borders of the selected curve's track (sheet px), re-cut
+        and re-trace every curve in that track."""
         e = get(sid); push_undo(e, "track edges")
         def work(j):
-            j.progress(0, 1, "re-cutting the track"); e.s.adjust_track_edges(float(body.get("left_dx", 0)), float(body.get("right_dx", 0)))
-            e.s.auto_trace(); return dict(ok=True)
+            tr = next((x.get("track") for x in e.curves if x["id"] == e.active), None)
+            same = [c["s"] for c in e.curves if c["s"] is e.s or (tr and c.get("track") == tr and c.get("kind") != "single")]
+            for k, cs in enumerate(same):
+                j.progress(k, len(same), "re-cutting the track")
+                cs.adjust_track_edges(float(body.get("left_dx", 0)), float(body.get("right_dx", 0)))
+                cs.auto_trace()
+            e.hl = None
+            return dict(ok=True)
         return job(e, "Track edges", work)
 
     @app.post("/app/api/{sid}/calib/scale2")
@@ -507,11 +1215,13 @@ def install(app, root: Path, runner) -> None:
 
     @app.get("/app/api/{sid}/trace/options")
     def trace_options(sid: str):
-        kw = get(sid).s.trace_kw
-        T = get(sid).s.T or {}
+        e = get(sid)
+        with e.lock:
+            kw = dict(e.s.trace_kw); T = e.s.T or {}
+            T = dict(candidates=len(T.get("candidates") or []), picked=T.get("picked", 0))
         return dict(cost_mode=kw.get("cost_mode", "conventional"), mask_other=bool(kw.get("mask_other", False)),
                     n_curves=int(kw.get("n_curves", 1)), pick=kw.get("pick", "auto"),
-                    candidates=len(T.get("candidates") or []) or 1, picked=T.get("picked", 0))
+                    candidates=T["candidates"] or 1, picked=T["picked"])
 
     @app.post("/app/api/{sid}/trace/pick")
     def trace_pick(sid: str, body: dict = Body(...)):
@@ -638,19 +1348,58 @@ def install(app, root: Path, runner) -> None:
     # ---------------- step 9: export (the only writer)
     @app.post("/app/api/{sid}/export/folder")
     def export_folder(sid: str, body: dict = Body(...)):
-        e = get(sid); e.guard.set_folder(body.get("path") or guard_default / e.app["name"]); return e.guard.state()
+        e = get(sid)
+        raw = body.get("path")
+        if not raw:
+            folder = guard_default / safe_name(e.app["name"], "export")
+        else:
+            q = Path(raw)
+            folder = q if q.is_absolute() else (root / q)
+        e.guard.set_folder(folder)
+        return export_state(e)
 
     @app.post("/app/api/{sid}/export/{kind}")
-    def export(sid: str, kind: str):
+    def export(sid: str, kind: str, body: dict = Body(default={})):
+        """Write files (the only writer). ``las`` = every curve on one 0.5 ft (or ``step`` 0.25 ft)
+        grid; ``csv`` / ``qc_png`` / ``session`` = the selected curve; ``logs_csv`` = every curve on one grid
+        and ``figure`` = the scan next to the plotted logs (both take ``ids`` to choose curves; ``figure``
+        takes ``image: false`` to leave the scan out); ``all`` = LAS, CSV, QC plot and session."""
         e = get(sid); s = e.s; name = e.app["name"]; out = []
+        try:
+            step = float((body or {}).get("step", 0.5))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "LAS step must be 0.5 or 0.25 ft")
+        if step not in (0.5, 0.25):
+            raise HTTPException(400, "LAS step must be 0.5 or 0.25 ft")
         kinds = ["las", "csv", "qc_png", "session"] if kind == "all" else [kind]
+        ids = (body or {}).get("ids")
+        if ids is not None:
+            ids = {str(i) for i in ids}
+            if not ids and kind in ("logs_csv", "figure"):
+                raise HTTPException(400, "no curves chosen: tick at least one log to plot")
+        stem = f"{safe_name(e.base.well, 'well')}_{safe_name(Path(e.app['scan_stem']).stem, 'scan')}"
         f = features(root)
+        cur = next((c for c in e.curves if c["id"] == e.active), None)
+        if cur is None:
+            raise HTTPException(404, "no curve selected")
         for k in kinds:
             if k == "las":
-                out.append(locked(e, lambda s: e.guard.write(name + ".las", lambda p: s.export_las(p, srvc="pyLogDigitizer app"))))
+                def wlas(p):
+                    from pylogdigitizer.las_export import common_grid, write_las
+                    keys = dict(zip((c["id"] for c in e.curves), unique_keys(c["name"] for c in e.curves)))
+                    series = {keys[c["id"]]: curve_series(c) for c in e.curves
+                              if c["s"].T is not None and c["s"].dm is not None}
+                    if not series:
+                        raise SessionError("nothing traced yet")
+                    g, cv = common_grid(series, step=step)
+                    units = {keys[c["id"]]: (c.get("unit") or UNITS.get(c["name"].split(":")[0], "")) for c in e.curves}
+                    return write_las(p, g, cv, units=units, well={"WELL": e.base.well, "SRVC": "pyLogDigitizer app"})
+                fname = name + ".las" if len(e.curves) == 1 else f"{stem}.las"
+                out.append(locked(e, lambda s: e.guard.write(fname, wlas)))
             elif k == "csv":
                 def wcsv(p):
-                    g, v = s.resampled(); c = s.curve.split(":")[0]
+                    from pylogdigitizer.las_export import resample
+                    g, v = resample(*curve_series(cur), step); c = s.curve.split(":")[0]
                     with open(p, "w", newline="") as fh:
                         w = csv.writer(fh); w.writerow(["DEPT", c])
                         for a, b in zip(g, v):
@@ -669,9 +1418,38 @@ def install(app, root: Path, runner) -> None:
                     for kk in ("scan", "las"):
                         if d.get(kk) and Path(d[kk]).resolve().is_relative_to(root):
                             d[kk] = Path(d[kk]).resolve().relative_to(root).as_posix()
+                        elif d.get(kk):
+                            d[kk] = Path(d[kk]).name
                     d["header_rows"] = e.app.get("header_rows")
+                    d["curve_meta"] = {kk: cur.get(kk) for kk in ("track", "cls", "kind", "pattern", "unit")}
                     Path(p).write_text(json.dumps(_clean(d), indent=1)); return p
                 out.append(locked(e, lambda s: e.guard.write(name + "_session.json", wses)))
+            elif k == "logs_csv":      # every (or the chosen) curve on one depth grid, like the LAS
+                def wlcsv(p):
+                    from pylogdigitizer.las_export import common_grid
+                    keys = dict(zip((c["id"] for c in e.curves), unique_keys(c["name"] for c in e.curves)))
+                    series = {keys[c["id"]]: curve_series(c) for c in e.curves
+                              if (ids is None or c["id"] in ids) and c["s"].T is not None and c["s"].dm is not None}
+                    if not series:
+                        raise SessionError("nothing traced yet")
+                    g, cv = common_grid(series, step=step)
+                    with open(p, "w", newline="") as fh:
+                        w = csv.writer(fh); w.writerow(["DEPT", *cv])
+                        for i, d in enumerate(g):
+                            w.writerow([repr(float(d)), *(repr(float(v[i])) for v in cv.values())])
+                    return p
+                out.append(locked(e, lambda s: e.guard.write(f"{stem}_logs.csv", wlcsv)))
+            elif k == "figure":        # the scan next to the plotted logs, height-aligned (PNG)
+                if not f["plot"]["ok"]:
+                    raise HTTPException(400, f["plot"]["hint"])
+                def wfig(p):
+                    from pylogdigitizer import qc_compare as qc
+                    T = logs_table(e, ids, step)
+                    if not T["curves"]:
+                        raise SessionError("nothing traced yet")
+                    img = e.tiles.level(e.tiles.max_level) if (body or {}).get("image", True) else None
+                    return qc.logs_figure(str(p), T, image=img, title=f"{e.base.well} · {Path(e.app['scan_stem']).name}")
+                out.append(locked(e, lambda s: e.guard.write(f"{stem}_logs.png", wfig)))
             elif k == "training":      # correction sample for ML training (project folder, not in "all")
                 out.append(locked(e, lambda s: s.save_training(root / "training_data" / "corrections")))
             else:

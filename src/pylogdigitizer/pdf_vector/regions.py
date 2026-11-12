@@ -175,7 +175,7 @@ def detect_page_layout(
                     ))
         info["n_tracks"] = sum(1 for r in regions if r.kind == "track")
     else:
-        # Vertical oilfield (FORGE / Schlumberger digital prints).
+        # Vertical oilfield (Schlumberger-style digital prints).
         grid_h, grid_v, body = classify_strokes(page.strokes)
         depth_x = float(dm.info["x_col"]) if dm is not None and "x_col" in dm.info else None
 

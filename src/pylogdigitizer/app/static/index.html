@@ -10,8 +10,12 @@
   <button id="quitBtn" class="ghost" title="Stop the app">Quit</button></header>
 <nav id="rail"></nav>
 <main id="main"><div id="viewer"></div><canvas id="ov"></canvas>
+  <div id="layers" hidden><b>Layers</b><label><input type="checkbox" id="lyScan" checked> scan</label><label><input type="checkbox" id="lyHl"> selected curve ink</label><label><input type="checkbox" id="lyGrid" checked> tracks and grid</label><label><input type="checkbox" id="lyTr" checked> traced curves</label></div>
+  <div id="curvePanel" hidden></div>
+  <div id="scalePops"></div><div id="tabBadge"></div><div id="lyState" hidden></div>
+  <div id="logPane" hidden><canvas id="logCv"></canvas></div>
   <div id="fig" hidden></div>
-  <div id="empty"><div><h1><img class="home-logo" src="/static/logo.png" alt="pyLogDigitizer" width="130" height="151"></h1><p>Turns a scanned paper well log into a LAS file, on your own computer.<br>Start with <b>1 · Open a scan</b> on the right.</p></div></div>
+  <div id="empty"><div><h1><img class="home-logo" src="/static/logo.png" alt="pyLogDigitizer" width="130" height="151"></h1><p>Turns a scanned paper well log into a LAS file, on your own computer.<br>Start with <b>1 · Open scan</b> on the right.</p></div></div>
 </main>
 <aside id="side"><div class="head"><h2 id="stepTitle"></h2><p class="lead" id="stepLead"></p>
   <button class="main" id="mainBtn"></button><div class="note" id="dirty"></div></div>

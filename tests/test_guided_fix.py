@@ -166,3 +166,35 @@ def test_node_snap_is_local_instant_and_snaps_to_ink(project):
     from pylogdigitizer.assisted_tracing import AssistedSession
     f = os.path.join(tempfile.mkdtemp(), "s.json"); open(f, "w").write(json.dumps(s.session_dict(), default=str))
     assert np.allclose(AssistedSession.from_session_file(f).T["x"], x1, equal_nan=True)
+
+
+def test_hidden_interval_is_null_and_a_tricky_spot(project, tmp_path):
+    """A stretch where the curve's ink is hidden under another curve: the trace stays connected, the
+    values (and the LAS) are null there, Trace and fix lists it, and answers / undo / reload work."""
+    from pylogdigitizer.assisted_tracing import AssistedSession
+    from pylogdigitizer.las_export import read_las
+    s = _session(project); x_before = s.T["x"].copy()
+    s.set_hidden_interval(1500, 1200)                                    # order does not matter
+    R = s.result(); m = (R["rows"] >= 1200) & (R["rows"] <= 1500)
+    assert np.isnan(R["value"][m]).all() and np.isfinite(R["value"][~m]).mean() > 0.95
+    assert np.array_equal(s.T["x"], x_before)                            # the line itself is unchanged
+    hid = [p for p in s.check_spots() if p["kind"] == "hidden"]
+    assert len(hid) == 1 and {c["id"] for c in hid[0]["choices"]} == {"null", "trace"}
+    assert s.overlay()["hidden_intervals"] == [[1200.0, 1500.0]]
+    g, v = s.resampled(0.5); gm = (g >= R["depth"][m].min() + 1) & (g <= R["depth"][m].max() - 1)
+    assert gm.any() and np.isnan(v[gm]).all()
+    las = read_las(s.export_las(tmp_path / "h.las")).df()["GR"]
+    assert las.loc[R["depth"][m].min() + 1:R["depth"][m].max() - 1].isna().all()
+    d = json.loads(s.save_session(tmp_path / "h.json").read_text())
+    assert d["hidden_intervals"] == [[1200.0, 1500.0]]
+    s2 = AssistedSession.from_session_file(tmp_path / "h.json")
+    assert s2.hidden_intervals == s.hidden_intervals and np.isnan(s2.result()["value"][m]).all()
+    s.answer_spot(hid[0]["id"], "null")                                  # keep null: asked no more
+    assert s.hidden_intervals and not [p for p in s.check_spots() if p["kind"] == "hidden"]
+    s.undo(); hid = [p for p in s.check_spots() if p["kind"] == "hidden"]
+    s.answer_spot(hid[0]["id"], "trace")                                 # "it is this curve": read it
+    assert s.hidden_intervals == [] and np.isfinite(s.result()["value"][m]).all()
+    s.undo(); assert s.hidden_intervals == [(1200.0, 1500.0)] and np.isnan(s.result()["value"][m]).all()
+    s.clear_hidden_intervals()
+    assert s.hidden_intervals == [] and np.isfinite(s.result()["value"][m]).all()
+    assert not [p for p in s.check_spots() if p["kind"] == "hidden"]

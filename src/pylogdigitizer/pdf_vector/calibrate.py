@@ -110,8 +110,8 @@ def _depth_label_pairs(
 def detect_depth_axis(texts: list[TextItem], min_labels: int = 4) -> str:
     """Return ``"x"`` for horizontal digital prints (depth left→right) else ``"y"``.
 
-    USGS GeoLog Locator exports often place depth along the page bottom; Schlumberger
-    / FORGE-style prints keep depth vertical. Detection uses the span of numeric
+    USGS GeoLog Locator exports often place depth along the page bottom; Schlumberger-style
+    prints keep depth vertical. Detection uses the span of numeric
     depth tick labels only — no fudge offsets.
     """
     pairs = _depth_label_pairs(texts, min_depth=0.0)

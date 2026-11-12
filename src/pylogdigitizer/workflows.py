@@ -22,7 +22,7 @@ from pylogdigitizer import header_ocr as hdo
 from pylogdigitizer.track_grid_detection import LayoutError
 from pylogdigitizer.depth_calibration import CalibrationError
 
-__all__ = ["Layout", "analyze_layout", "calibrate_depth", "digitize_curve", "trace_to_values", "section_rows", "LayoutError", "CalibrationError", "SectionChoiceNeeded"]
+__all__ = ["Layout", "analyze_layout", "calibrate_depth", "digitize_curve", "trace_to_values", "section_rows", "LayoutError", "CalibrationError", "SectionChoiceNeeded", "prepare_color_scan", "open_color_curve", "color_curve_values", "apply_auto_backup", "trace_wraps"]
 
 
 @dataclass
@@ -43,6 +43,7 @@ class Layout:
     _depth_panel: np.ndarray | None = field(default=None, repr=False)
     _ocr_values: list | None = field(default=None, repr=False)
     sections: list = field(default_factory=list, repr=False)   # [(labels, mode, scores)] per depth-label lattice
+    layout_mode: str = "default"    # "default", "thin_borders" or "grey_thin_borders" (grey-grid retry)
 
     def with_section(self, i: int) -> "Layout":
         """The same layout using the i-th depth-label lattice (a sheet can hold e.g. a 2" and a 5" log)."""
@@ -71,17 +72,52 @@ class Layout:
         return np.array([l["row"] for l in self.labels], float)
 
 
+GREY_INK_THRESHOLD = 200   # grey-grid retry: luminance below this counts as ink
+
+
 def analyze_layout(path, x_range: tuple[int, int] | None = None, rows: tuple[int, int] | None = None,
                    block: int = 800, deskew_block: int = 2000) -> Layout:
     """Load the sheet (or the optional ``x_range``/``rows`` window), deskew, find the first stable
-    track layout below the header, follow the boundaries and pick the depth labels."""
+    track layout below the header, follow the boundaries and pick the depth labels.
+
+    If no layout is found, the sheet is retried with mid-grey counted as ink and thin track
+    borders accepted (grey-grid digital plots). When the default pass only succeeded through a
+    fallback detector, a thin-border layout (continuous borders) is preferred when it only adds
+    track splits to it (same depth column, every edge kept).
+    ``L.layout_mode`` records which pass worked."""
     t0 = time.time()
     info = read_info(path)
     x0, x1 = x_range or (0, info["width"])
     r0, r1 = rows or (0, info["height"])
     ink = load_ink(path, (x0, r0, x1, r1))
     ink, ang = scl.deskew_blocks(ink, deskew_block)
-    probe, tracks = tgd.find_probe(ink, block)
+    mode = "default"
+    try:
+        probe, tracks = tgd.find_probe(ink, block)
+    except LayoutError:
+        # Digital plots (e.g. Eli / Gemini triple combos) draw the grid and the thin track
+        # borders in mid-grey (128,128,128), which the default ink threshold drops. Retry
+        # with grey counted as ink and thin (>= 3 px) borders accepted.
+        ink_g = load_ink(path, (x0, r0, x1, r1), threshold=GREY_INK_THRESHOLD)
+        ink_g, ang_g = scl.deskew_blocks(ink_g, deskew_block)
+        probe, tracks = tgd.find_probe(ink_g, block, thin_borders=True)
+        ink, ang, mode = ink_g, ang_g, "grey_thin_borders"
+    else:
+        # A fallback detector (grid spacing / horizontal grid) can merge neighbouring tracks
+        # whose shared border is thin (e.g. the 1-bit working images of a colour digital
+        # plot). Prefer a thin-border layout when it is valid, keeps the same depth column
+        # and resolves more tracks.
+        if tracks and tracks[0].get("detector") != "detect_tracks":
+            try:
+                probe_t, tracks_t = tgd.find_probe(ink, block, thin_borders=True)
+            except LayoutError:
+                tracks_t = []
+            # accepted only when it ADDS splits to the layout that already worked (every edge of
+            # the fallback layout is kept), so a scan read correctly before is never re-split
+            if (tracks_t and tracks_t[0].get("detector") == "detect_tracks_thin"
+                    and len(tracks_t) > len(tracks) and tgd.same_depth_column(tracks, tracks_t)
+                    and tgd.only_adds_splits(tracks, tracks_t)):
+                probe, tracks, mode = probe_t, tracks_t, "thin_borders"
     names, xs = [], []
     k = 0
     for t in tracks:
@@ -95,9 +131,28 @@ def analyze_layout(path, x_range: tuple[int, int] | None = None, rows: tuple[int
     centers = np.r_[cen_up[::-1], cen_dn]; edges = np.r_[e_up[::-1], e_dn]
     if len(centers) == 0:
         raise LayoutError("track boundaries could not be followed (sheet too short?)")
+    if mode != "default" and len(edges):
+        # digital plots are perfectly straight: 1 px jitter between followed blocks would only
+        # make rectify() stretch the panels row by row, which garbles the depth labels
+        med = np.median(edges, axis=0)
+        flat = np.ptp(edges, axis=0) <= 2
+        edges[:, flat] = med[flat]
     L = Layout(ink, x0, r0, ang, tracks, probe, centers, edges, names)
+    L.layout_mode = mode
     t3 = time.time()
     dcol = L.panel("depth", (0, ink.shape[0]))
+    if mode != "default":
+        # thin-border digital plots: drop the border lines themselves from the depth column,
+        # so the full-height rules do not hide the label rows
+        dt = next(t for t in tracks if t["kind"] == "depth")
+        tl = max(0, int(dt["left"] - dt["grid_x"][0]) + 1)
+        tr_ = max(0, int(dt["grid_x"][-1] - dt["right"]) + 1)
+        li, ri = L.edge_names.index("depth.left"), L.edge_names.index("depth.right")
+        lft, rgt = edges[:, li] + tl, edges[:, ri] - tr_
+        # one output column per source column (the -0.5 keeps rectify's pixel-centre sampling
+        # on integer columns instead of rounding .5 values alternately up and down)
+        dcol = tgd.rectify(ink, (0, ink.shape[0]), centers, lft - 0.5, rgt - 0.5,
+                           int(round(float(np.median(rgt - lft)))))
     L._depth_panel = dcol
     L.labels, L.label_mode, L.label_scores = dc.choose_labels(dcol, row_min=probe)
     L.sections = [(L.labels, L.label_mode, L.label_scores)]
@@ -144,7 +199,7 @@ def calibrate_depth(L: Layout, track: str = "track1", first_depth: float | None 
     return dm, anchors, res, checks
 
 
-LINE_HINTS = ("thin", "thick", "dashed", "solid", "left", "right")
+LINE_HINTS = ("thin", "thick", "dashed", "dotted", "solid", "left", "right")
 
 
 def check_line_hint(h: str) -> str:
@@ -498,3 +553,209 @@ def digitize_kwargs_from_proposal(proposal: dict, confirmed: bool = False, **ove
         l, r = out["scale"]; bl, br = out["backup"]
         out["wrap_side"] = "right" if abs(bl - r) <= abs(br - l) else "left"
     return out
+
+
+# --------------------------------------------------------------------------- colour-scan helpers
+def prepare_color_scan(path, palette: dict | None = None, **suggest_kw) -> dict:
+    """Load a colour scan, suggest or apply a palette, classify, and build the black-ink base.
+
+    Returns dict(rgb, palette, labels, names, body_rows, base). ``palette`` if given is used
+    as-is (manual palette via the API); otherwise :func:`scan_color.suggest_palette` proposes one.
+    """
+    from pylogdigitizer.scan_io import load_rgb
+    from pylogdigitizer.scan_color import suggest_palette, classify_colors, find_log_body
+    from pylogdigitizer.curve_ink import make_base_ink
+    rgb = load_rgb(path)
+    pal = dict(palette) if palette else suggest_palette(rgb, **suggest_kw)
+    labels, names = classify_colors(rgb, pal)
+    body = find_log_body(labels, names)
+    base = make_base_ink(labels, names, body)
+    return dict(rgb=rgb, palette=pal, labels=labels, names=names, body_rows=body, base=base)
+
+
+def trace_wraps(s, jump: float = 0.35, edge: float = 0.08, near_ft: float = 1.5) -> tuple:
+    """Wrap-arounds the trace of session ``s`` followed: it left the main curve towards the wrap
+    edge, jumped across to the backup curve near the opposite edge, followed it, then jumped back.
+
+    Returns ``(wraps [(a, b)] in trace samples, connector mask)``.
+    """
+    T = s.T
+    if T is None or "cost" not in T or "path_padded" not in T:
+        return [], np.zeros(0, bool)
+    n = len(T["x"])
+    cost, pp = T["cost"], np.asarray(T["path_padded"])
+    on = (cost[np.arange(n), pp] < 0.5) & ~(T["off_left"] | T["off_right"])
+    xs = np.asarray(T["x"], float) / float(s.width)
+    right_side = (s.scale.get("wrap_side") or "right") == "right"
+    if not right_side:
+        xs = 1.0 - xs
+    ncol, pad = cost.shape[1], int(T["pad"])
+    inner = cost[:, pad:ncol - pad] < 0.5
+    w = inner.shape[1]
+    e0, e1 = max(1, int(round(0.015 * w))), max(2, int(round(edge * w)))
+    ink_l, ink_r = inner[:, e0:e1].any(axis=1), inner[:, w - e1:w - e0].any(axis=1)
+    if not right_side:
+        ink_l, ink_r = ink_r, ink_l
+    k = max(2, int(round(near_ft * (s.dm.px_per_ft if s.dm is not None else 20) / T["fy"])))
+
+    def near(m, p, q):
+        return bool(m[max(0, p - k):min(n, q + k + 1)].any())
+
+    idx = np.flatnonzero(on)
+    conn = np.zeros(n, bool)
+
+    def across_paper(p, q):
+        if q - p > 1:
+            return True
+        lo, hi = sorted((int(pp[p]), int(pp[q])))
+        return float((np.minimum(cost[p, lo:hi + 1], cost[q, lo:hi + 1]) >= 0.5).mean()) > 0.5
+
+    wraps, a = [], None
+    for p, q in zip(idx[:-1], idx[1:]):
+        d = xs[q] - xs[p]
+        if abs(d) < jump or not (near(ink_l, p, q) and near(ink_r, p, q)) or not across_paper(p, q):
+            continue
+        if a is None and d < 0 and xs[p] > 0.5 > xs[q]:
+            a = int(q); conn[p + 1:q] = True
+        elif a is not None and d > 0 and xs[p] < 0.5 < xs[q]:
+            wraps.append((a, int(q))); conn[p + 1:q] = True; a = None
+    return [(x, y) for x, y in wraps if y > x], conn
+
+
+def apply_auto_backup(s, cv: dict, auto_backup: bool = True):
+    """If the trace wraps and no backup scale is set, assume the next full track width.
+
+    Sets ``s.errors['wrap_note']``. Does nothing when ``auto_backup`` is False or a backup is
+    already set (other than recording the depths where the wrap was seen).
+    """
+    from pylogdigitizer.scale_wraparound import default_backup
+    if s.T is None or s.dm is None:
+        return s
+    wr, _ = trace_wraps(s)
+    if not wr:
+        return s
+    ft = ", ".join(f"{s.dm(s.T['rows'][a]):.0f}-{s.dm(s.T['rows'][b - 1]):.0f}" for a, b in wr[:8])
+    if s.scale.get("backup"):
+        s.errors["wrap_note"] = f"wraps onto the backup scale {s.scale['backup']} at {ft} ft"
+    elif auto_backup:
+        bk = default_backup(cv)
+        s.set_scale(s.scale["left"], s.scale["right"], s.scale["type"], backup=bk,
+                    wrap_side=s.scale.get("wrap_side") or "right", use_hatch=False)
+        s.errors["wrap_note"] = (f"wraps around at {ft} ft - backup scale {bk[0]:g}-{bk[1]:g} assumed "
+                                 "(give 'backup' if the print uses another)")
+    return s
+
+
+def open_color_curve(tif, cv: dict, well: str, trace_kw: dict, edge_px: int = 6, depth_range=None,
+                     first_depth=None, label_interval=None, x_range=None, auto_backup: bool = True,
+                     las_path=None):
+    """AssistedSession for one colour-isolated working image: layout + depth + auto trace.
+
+    ``x_range`` is the track's (left, right) x on the original sheet. If the session finds a
+    different width on this working image (a thick curve can look like a track border), the
+    given position is used as a box section and a note goes to ``s.errors``.
+    ``auto_backup``: when the trace wraps and ``cv`` has no backup, assume the next full
+    track width (:func:`scale_wraparound.default_backup`).
+    ``las_path`` is the paired reference LAS used by :meth:`AssistedSession.qc`.
+    ``cv['use_hatch']`` (default False) reads hatched off-scale fills as on the black-ink path.
+    Track-edge columns are excluded (``edge_px``) so the tracer cannot hug a thick
+    printed border — without that the path collapses to a constant edge value.
+    """
+    from pylogdigitizer.assisted_tracing import AssistedSession
+    s = AssistedSession(str(tif), curve=cv["name"], well=well, track=cv.get("track", "track1"),
+                        scale=(float(cv["left"]), float(cv["right"])), scale_type=cv.get("scale_type", "linear"),
+                        backup=cv.get("backup"), wrap_side=cv.get("wrap_side", "right"),
+                        use_hatch=bool(cv.get("use_hatch", False)),
+                        first_depth=first_depth, label_interval=label_interval, trace_kw=dict(trace_kw),
+                        las_path=las_path)
+    s.open()
+    if s.pan is None and s.dm is None:
+        return s
+    box = None
+    if x_range is not None:
+        want = float(x_range[1]) - float(x_range[0])
+        if s.pan is None or abs(s.width - want) > max(6.0, 0.03 * want):
+            box = (float(x_range[0]), float(x_range[1]))
+            s.errors["layout_note"] = (f"{cv.get('track', 'track')} found {s.width} px wide on this curve's image, "
+                                       f"header says {want:.0f} px - used that position x = {box[0]:.0f}-{box[1]:.0f}")
+    if box is not None or depth_range:
+        rows = None if depth_range or s.section is None else tuple(s.section["rows"])
+        try:
+            s.set_section(track=cv.get("track", "track1"), box=box,
+                          depth_range=tuple(depth_range) if depth_range else None, rows=rows)
+            s.errors.pop("section", None)
+        except Exception as e:
+            s.errors["section"] = str(e)
+            return s
+    if s.pan is None:
+        return s
+    if edge_px:
+        s.trace_kw["exclude_cols"] = [(0, edge_px), (s.width - edge_px, s.width + 2)]
+    s.auto_trace()
+    return apply_auto_backup(s, cv, auto_backup=auto_backup)
+
+
+def _clip_edge(s) -> float:
+    """Distance from a track edge (px) that counts as 'at the edge' for the clipping rule: the
+    columns kept free of the trace at each edge (``exclude_cols``) plus 2 px, at least 1 % of
+    the width (the trace cannot get closer than the excluded columns)."""
+    e = max(3.0, 0.01 * s.width)
+    for a, b in (s.trace_kw or {}).get("exclude_cols") or []:
+        if a <= 0:
+            e = max(e, float(b) + 2.0)
+        elif b >= s.width:
+            e = max(e, float(s.width - a) + 2.0)
+    return e
+
+
+def color_curve_values(s, null_offscale: bool = True, fill_backup=None):
+    """(depth, value) of a traced colour-scan session.
+
+    ``null_offscale``: where the trace runs flat along a track edge, write null instead of
+    the edge value. With a backup scale, stretches where the trace followed the wrapped
+    curve (:func:`trace_wraps`) and the session's ``backup_intervals`` are read on the
+    backup scale. ``fill_backup`` (from :func:`scale_wraparound.fill_backups`): where a
+    wrap is shaded, the backup value is read at the end of the shading (most reliable).
+    Using a fill attribution always sets ``s.errors['backup_review']``.
+    With ``use_hatch`` set on the session, its own values (hatch-aware backup reading) are used.
+    """
+    from pylogdigitizer import scale_calibration as sc
+    R = s.result()
+    x = np.asarray(R["x_panel"], float)
+    if not s.scale.get("backup") or s.scale.get("use_hatch"):
+        # no backup, or hatched off-scale fills: the session values already carry the backup reading
+        v = np.asarray(R["value"], float)
+        if null_offscale:
+            v = clip_to_null(v, x, s.width, s.wraps, edge=_clip_edge(s))
+        return np.asarray(R["depth"], float), v
+    mk = sc.log_scale if s.scale["type"] == "log" else sc.linear_scale
+    v = mk(0, s.width, s.scale["left"], s.scale["right"])(x)
+    bk = mk(0, s.width, *s.scale["backup"])(x)
+    wr, conn = trace_wraps(s)
+    rows = np.asarray(R["rows"], float)
+    for r0, r1 in getattr(s, "backup_intervals", []) or []:
+        idx = np.flatnonzero((rows >= r0) & (rows <= r1))
+        if len(idx):
+            wr = wr + [(int(idx[0]), int(idx[-1]) + 1)]
+    for a, b in wr:
+        v[a:b] = bk[a:b]
+    if null_offscale:
+        v = clip_to_null(v, x, s.width, wr, edge=_clip_edge(s))
+    if len(conn):
+        v[conn[:len(v)]] = np.nan
+    if fill_backup is not None:
+        fr, fxs = (np.asarray(a_, float) for a_ in fill_backup[:2])
+        k = np.clip(np.round(rows - fr[0]).astype(int), 0, len(fr) - 1)
+        xf = np.where((rows >= fr[0]) & (rows <= fr[-1]), fxs[k], np.nan)
+        m = np.isfinite(xf)
+        if m.any():
+            v[m] = mk(0, s.width, *s.scale["backup"])(np.asarray(s.sheet_to_panel(rows[m], xf[m] + 1.0), float))
+            kk = max(2, int(round(1.5 * (s.dm.px_per_ft if s.dm is not None else 20) / s.T["fy"])))
+            near = np.convolve(m.astype(float), np.ones(2 * kk + 1), "same") > 0
+            edge_side = x / s.width < 0.25 if (s.scale.get("wrap_side") or "right") == "right" else x / s.width > 0.75
+            tail = near & ~m & edge_side
+            v[tail] = bk[tail]
+        s.errors["backup_review"] = ("shaded fill used to read the backup scale — review this "
+                                     "attribution before trusting the off-scale values")
+    return np.asarray(R["depth"], float), v
+
