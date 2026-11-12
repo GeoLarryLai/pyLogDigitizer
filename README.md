@@ -46,7 +46,7 @@ Installing from source builds the Rust tracer and needs a Rust toolchain. Withou
 
 ## Supported input files
 
-The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference. The Python API loads TIFF, PNG and JPEG, or any other still image Pillow can open. A scanned (raster) PDF is read from the image on the first page. A digital-print PDF that still has vector curves is read with `pylogdigitizer.pdf_vector.digitize_pdf` (experimental). Multi-page files use only the first page.
+The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference. The Python API loads TIFF, PNG and JPEG, or any other still image Pillow can open. A scanned (raster) PDF is read from the image on the first page. A digital-print PDF that still has vector curves is read straight from its line drawings (experimental). Multi-page files use only the first page, except vector PDFs, where the page with the curves is found on its own.
 
 ## What it can do
 
@@ -55,8 +55,8 @@ The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference.
 - Find tracks, grid lines and depth numbers on their own, and read curve names and scales from the header with OCR.
 - Trace every curve and read off-scale stretches on the backup scale where they wrap back in from the other edge.
 - Check and fix everything in a local browser app.
-- Write LAS 2.0 (0.5 ft step, or 0.25 ft), plus figures and an optional CSV. Traces are dense and never smoothed.
-- Read digital-print PDFs that still carry vector curves (experimental).
+- Write LAS 2.0 (0.5 ft step by default, or any step you type), plus figures and an optional CSV. Traces are dense and never smoothed.
+- Vector PDFs (curves stored as lines, not pixels) are detected automatically and read straight from the file, with no tracing; mixed PDFs take the header from the PDF text and trace the curves (experimental).
 
 **Limitations**
 
@@ -95,7 +95,7 @@ The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference.
 ![USA 'A' 16 line-style traces vs the KGS LAS](image/ex_qc_usa.png)
 *USA 'A' 16 (KGS): GR, density porosity and neutron porosity traced by line style (colour) against the KGS LAS (grey), with r and RMSE over the whole log. It works, but less exactly than on a colour scan.*
 
-All example scans and LAS files are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (details in `example_data/SOURCES.txt`). The source of this material is the Kansas Geological Survey website at http://www.kgs.ku.edu/. All Rights Reserved.
+All example scans and LAS files are from the [Kansas Geological Survey](https://www.kgs.ku.edu/) (details in `example_data/SOURCES.txt`). The source of this material is the Kansas Geological Survey website at http://www.kgs.ku.edu/. All Rights Reserved. Notebook 06 downloads its vector PDF and LAS on demand from the Illinois Basin – Decatur Project (credit: Illinois State Geological Survey, IBDP, U.S. Department of Energy; [doi:10.18141/1854144](https://doi.org/10.18141/1854144); [IBDP dataset license](https://co2datashare.org/view/license/e27b2b34-a3fc-463f-adbf-bd14c83640f4)); they are not stored in the repository, and that example data is for non-commercial use only.
 
 ## Interactive app
 
@@ -112,7 +112,10 @@ Run it in a folder with your scans (the bundled examples are listed when it is r
 5. **Check and save**: the scan beside the digitized logs at the same depth; save figures, a CSV and the LAS file.
 
 ![STONE 5-19 colour raster in the local browser app](image/app_demo_stone_color.gif)
-*STONE 5-19 (KGS) colour raster in the app: open the scan, check tracks and depth, look at the greyscale scan and switch on the grid and the traced curves, pick GR, check the OCR'd header and scales, trace, then check and save one LAS with every curve. The analysis wait is sped up.*
+*STONE 5-19 (KGS) colour raster in the app: open the scan, check tracks and depth, look at the greyscale scan and switch on the grid and the traced curves, pick GR, check the OCR'd header and scales, trace, then check and save one LAS with every curve at a typed depth step. The analysis wait is sped up.*
+
+![IBDP CCS1 vector PDF in the local browser app](image/app_demo_vector_ccs1.gif)
+*IBDP CCS1 vector PDF in the app: the file is recognised as a vector PDF, so tracing is skipped and it goes straight to checking and saving, here against the LAS it was plotted from. The loading wait is sped up.*
 
 ## Notebooks
 
@@ -123,6 +126,7 @@ Run it in a folder with your scans (the bundled examples are listed when it is r
 | [03 · Train the scan segmenter](notebooks/03_train_scan_segmenter.ipynb) | Optional retraining of the bundled ink segmenter into your own folder. |
 | [04 · Colour scan to LAS](notebooks/04_color_scan_to_las.ipynb) | STONE 5-19: ink palette, layout, header, one trace per curve, LAS. |
 | [05 · Line styles to LAS](notebooks/05_line_styles_to_las.ipynb) | USA 'A' 16: curves told apart by line style on a black-and-white scan, LAS. |
+| [06 · Vector PDF to LAS](notebooks/06_vector_pdf_to_las.ipynb) | IBDP CCS1: a 12-curve vector PDF read without tracing, checked against its LAS. |
 
 ## Citation
 

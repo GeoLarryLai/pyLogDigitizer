@@ -14,6 +14,14 @@ On load every curve of the sheet is identified (``curve_identify``: by colour, b
 both), gets its own working image and its own assisted session, and is traced. The selected
 curve's session is ``e.s``, so every editing route acts on the selected curve; the viewer always
 shows the original scan.
+
+Input type (0.4.0): the Open scan tab first runs ``detect_input_kind`` (``GET /app/api/detect``) and
+shows the kind (image scan, vector PDF or mixed) and the recommended method, which can be
+overridden (``method`` in ``POST /app/api/open``). A vector PDF page is read exactly from its paths
+(``app.vector_entry``): one read-only curve session per path, no tracing, and the page drawing as
+the viewer image; the tracks, curves and trace steps are hidden and Check and save / export are
+the same as for scans. A mixed PDF is traced from its image, with the header names and scales
+taken from the PDF text.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -276,6 +284,12 @@ def logs_table(e, ids=None, step: float = 0.5) -> dict:
     from pylogdigitizer.las_export import resample
     L = e.base.L
     tracks = [dict(name=k, left=float(v[0]), right=float(v[1])) for k, v in track_ranges(L).items()] if L is not None else []
+    if L is None:                         # vector page: the tracks are the curves' header extents on the drawing
+        seen = {}
+        for c in e.curves:
+            if c.get("track_px") and c.get("track") not in seen:
+                seen[c["track"]] = dict(name=c["track"], left=c["track_px"][0], right=c["track_px"][1])
+        tracks = sorted(seen.values(), key=lambda t: t["left"])
     out, d_lo, d_hi = [], np.inf, -np.inf
     for c in e.curves:
         s = c["s"]
@@ -297,11 +311,36 @@ def logs_table(e, ids=None, step: float = 0.5) -> dict:
     return dict(tracks=tracks, curves=out, ticks=ticks, width=int(e.tiles.w), height=int(e.tiles.h))
 
 
+MAX_LAS_SAMPLES = 2_000_000
+
+
+def check_las_step(step: float, e=None) -> float:
+    """A typed LAS depth step: a finite number of feet > 0, and not so small that the LAS would hold
+    more than :data:`MAX_LAS_SAMPLES` rows."""
+    import math
+    if not math.isfinite(step) or step <= 0:
+        raise HTTPException(400, "LAS step must be a number of feet greater than 0")
+    if e is not None:
+        lo, hi = np.inf, -np.inf
+        for c in e.curves:
+            d = np.asarray(c["s"].result()["depth"], float) if c["s"].T is not None else np.array([])
+            if d.size and np.isfinite(d).any():
+                lo, hi = min(lo, np.nanmin(d)), max(hi, np.nanmax(d))
+        if np.isfinite(lo) and (hi - lo) / step > MAX_LAS_SAMPLES:
+            raise HTTPException(400, f"LAS step {step:g} ft is too small for {hi - lo:.0f} ft of log "
+                                     f"(more than {MAX_LAS_SAMPLES:,} rows)")
+    return step
+
+
 def match_ref_curve(name: str, columns) -> str | None:
     """LAS column for a curve name: the same mnemonic, else the same canonical mnemonic."""
     cols = list(columns)
     if name in cols:
         return name
+    key = lambda t: re.sub(r"[^A-Z0-9]", "", str(t).upper())          # FL_COND_AMB = "FL COND AMB", GAM_NAT = "GAM(NAT)"
+    same = [c for c in cols if key(c) == key(name)]
+    if len(same) == 1:
+        return same[0]
     if re.match(r"TRACK\d+_", name):                     # unnamed curve: nothing to compare with yet
         return None
     from pylogdigitizer.header_ocr import CURVES, match_mnemonic
@@ -387,6 +426,11 @@ def install(app, root: Path, runner) -> None:
                   active=getattr(e, "active", None), kind=(getattr(e, "ident", None) or {}).get("kind", "single"),
                   n_curves=len(getattr(e, "curves", [])), scan_name=e.app.get("scan_stem"), las=e.base.las_path and _display_path(e.base.las_path, root),
                   skew=[float(a) for a in e.base.L.skew_deg] if e.base.L is not None else [])
+        inp = e.app.get("input") or {}
+        st.update(input=dict(kind=inp.get("kind"), used=inp.get("used", "scan"), method=inp.get("method", "auto"),
+                             page=inp.get("page", 0), n_pages=inp.get("n_pages", 1),
+                             method_label=inp.get("method_label"), evidence=inp.get("evidence"), notes=inp.get("notes")),
+                  vector=e.app.get("vector"), mixed=e.app.get("mixed"))
         col = e.app.get("color") or {}
         st.update(is_color=bool(col.get("is_color")),
                   color=dict(is_color=bool(col.get("is_color")), confirmed=bool(col.get("confirmed")),
@@ -557,16 +601,92 @@ def install(app, root: Path, runner) -> None:
         Image.fromarray(out).save(q)
         return q
 
+    def detect(scan: Path, page: int = 0) -> dict:
+        from pylogdigitizer.input_kind import detect_input_kind
+        try:
+            d = detect_input_kind(scan, page=page).as_dict()
+        except Exception as ex:
+            raise HTTPException(400, f"cannot inspect {scan.name}: {ex}")
+        d["path"] = _display_path(scan, root)
+        return d
+
+    @app.get("/app/api/detect")
+    def detect_get(scan: str, page: int = 0):
+        """Input type of a scan or PDF before it is opened: {kind: scan|vector|mixed, method, method_label,
+        evidence: {n_paths, n_curve_paths, text_chars, image_coverage, ...}, notes}."""
+        q = resolve(scan)
+        if q is None:
+            raise HTTPException(400, "no scan given")
+        return _clean(detect(q, max(0, int(page))))
+
+    def build_vector(scan: Path, las, body: dict, j, page) -> _Entry:
+        from pylogdigitizer.app.vector_entry import build_vector_entry
+        j.progress(0, 3, "reading the curve paths, depth numbers and header from the PDF")
+        base, curves, rgb, log = build_vector_entry(scan, las, body, page)
+        j.progress(2, 3, "drawing the page")
+        e = _Entry(base); e.sid = uuid.uuid4().hex[:10]; e.undo = UndoStack(); e.base = base
+        e.guard = ExportGuard(guard_default / f"{safe_name(base.well, 'well')}_{safe_name(scan.stem, 'scan')}")
+        e.app = dict(name="", scan_stem=scan.name, curve=curves[0]["name"], initial_scale=dict(base.scale), header_rows=None,
+                     header_ocr=None, header_choice=None, settings={}, label_values=None, rotate=0.0, body=dict(body),
+                     color=dict(is_color=False, confirmed=False, source=str(scan)),
+                     vector=dict(page=int(log.info["page"]), notes=list(log.info.get("notes") or []),
+                                 headers=log.info.get("headers") or []))
+        e.tiles = TilePyramid(rgb)
+        e.ident = dict(kind="vector"); e.curves = curves
+        if las:
+            from pylogdigitizer.las_export import read_las
+            cols = list(read_las(las).df().columns)
+            for c in curves:
+                c["ref"] = c["s"].ref_curve = match_ref_curve(c["name"], cols) or match_ref_curve(c["header"], cols)
+        select_curve(e, curves[0]["id"])
+        e.tiles.level(max(0, e.tiles.max_level - 6))
+        return e
+
     @app.post("/app/api/open")
     def open_scan(body: dict = Body(...)):
+        """{scan, las?, method?: auto|trace|vector|mixed, page?, ...}: open and analyse. ``auto`` (default)
+        uses the detected input type; vector PDF pages are read from their paths (no tracing)."""
         scan, las = resolve(body.get("scan")), resolve(body.get("las"))
         if scan is None:
             raise HTTPException(400, "no scan given")
+        method = str(body.get("method") or "auto")
+        if method not in ("auto", "trace", "vector", "mixed"):
+            raise HTTPException(400, "method must be auto, trace, vector or mixed")
+        try:
+            page = int(body["page"]) if body.get("page") not in (None, "") else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, "page must be a page number")
+        is_pdf = scan.suffix.lower() == ".pdf"
+        if not is_pdf and method in ("vector", "mixed"):
+            raise HTTPException(400, f"{method} needs a PDF file; {scan.name} is an image (use trace)")
+        found = detect(scan, page or 0)
+        use = {"trace": "scan", "vector": "vector", "mixed": "mixed"}.get(method) or found["kind"]
+        if use == "vector" and page is None and found.get("evidence", {}).get("curve_pages"):
+            page = found["evidence"]["curve_pages"][0] - 1
+        if use != "vector" and page:
+            raise HTTPException(400, "scanned and mixed PDFs are read from their first page only; "
+                                     "pick page 1 (vector PDFs can use any page)")
 
         def work(j):
-            e = build_entry(scan, las, body, j)
+            if use == "vector":
+                e = build_vector(scan, las, body, j, page)
+            else:
+                e = build_entry(scan, las, body, j)
+                if use == "mixed":
+                    from pylogdigitizer.pdf_vector.mixed import mixed_header, apply_mixed_header
+                    from pylogdigitizer.curve_identify import track_ranges
+                    try:
+                        H = mixed_header(scan, page or 0)
+                        tr = track_ranges(e.base.L) if e.base.L is not None else {}
+                        e.app["mixed"] = dict(applied=apply_mixed_header(e.curves, tr, H), n_headers=len(H["headers"]),
+                                              depth_labels=len(H["depth_labels"]))
+                        if e.active:
+                            select_curve(e, e.active)
+                    except Exception as ex:          # the traced curves stay; only the header source changes
+                        e.base.errors["mixed"] = f"PDF text header not used: {type(ex).__name__}: {ex}"
+            e.app["input"] = dict(found, used=use, method=method)
             sessions[e.sid] = e
-            return dict(sid=e.sid, n_curves=len(e.curves))
+            return dict(sid=e.sid, n_curves=len(e.curves), input=use)
         return job(None, "Load scan", work)
 
     @app.post("/app/api/upload")
@@ -1360,17 +1480,16 @@ def install(app, root: Path, runner) -> None:
 
     @app.post("/app/api/{sid}/export/{kind}")
     def export(sid: str, kind: str, body: dict = Body(default={})):
-        """Write files (the only writer). ``las`` = every curve on one 0.5 ft (or ``step`` 0.25 ft)
-        grid; ``csv`` / ``qc_png`` / ``session`` = the selected curve; ``logs_csv`` = every curve on one grid
+        """Write files (the only writer). ``las`` = every curve on one depth grid (``step`` ft, any
+        step > 0, default 0.5); ``csv`` / ``qc_png`` / ``session`` = the selected curve; ``logs_csv`` = every curve on one grid
         and ``figure`` = the scan next to the plotted logs (both take ``ids`` to choose curves; ``figure``
         takes ``image: false`` to leave the scan out); ``all`` = LAS, CSV, QC plot and session."""
         e = get(sid); s = e.s; name = e.app["name"]; out = []
-        try:
+        try:                             # any depth step > 0 ft, typed in the app (scans and vector pages)
             step = float((body or {}).get("step", 0.5))
         except (TypeError, ValueError):
-            raise HTTPException(400, "LAS step must be 0.5 or 0.25 ft")
-        if step not in (0.5, 0.25):
-            raise HTTPException(400, "LAS step must be 0.5 or 0.25 ft")
+            raise HTTPException(400, "LAS step must be a number of feet greater than 0")
+        check_las_step(step, e)
         kinds = ["las", "csv", "qc_png", "session"] if kind == "all" else [kind]
         ids = (body or {}).get("ids")
         if ids is not None:

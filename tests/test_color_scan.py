@@ -187,8 +187,11 @@ def test_common_grid_no_smoothing():
     assert grid[0] == pytest.approx(100.0) and grid[-1] == pytest.approx(101.5)
     assert curves["A"][0] == pytest.approx(1.0) and np.isnan(curves["A"][-1])
     assert np.isnan(curves["B"][0]) and curves["B"][-1] == pytest.approx(6.0)
-    with pytest.raises(ValueError, match="0.5"):
-        common_grid({"A": (d1, v1)}, step=0.1)
+    g, _ = common_grid({"A": (d1, v1)}, step=0.1)          # any step > 0 ft
+    assert np.allclose(np.diff(g), 0.1)
+    for bad in (0, -0.5, float("nan"), "abc"):
+        with pytest.raises(ValueError, match="greater than 0"):
+            common_grid({"A": (d1, v1)}, step=bad)
 
 
 def test_load_rgb_and_is_color_scan(tmp_path):

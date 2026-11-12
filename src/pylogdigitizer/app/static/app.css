@@ -77,3 +77,5 @@ table.hdr input.ocr{font:12px ui-monospace,monospace} table.hdr input.ocr.mid{ba
 details.dd{border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#fff} details.dd summary{cursor:pointer;font-weight:600}
 details.dd .ddl{max-height:220px;overflow:auto;margin-top:4px} details.dd label{display:flex;align-items:center;gap:4px;margin:2px 0}
 .og{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:6px;padding:4px 8px;margin:6px 0} .og-h{font-weight:600;font-size:12px}
+
+.card.vnote{border-left:4px solid #0f766e;background:#f0fdfa}

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin>=1.5,<2"]
+requires = ["maturin>=1.12,<2"]
 build-backend = "maturin"
 
 [project]
 name = "pylogdigitizer"
-version = "0.3.0"
+version = "0.4.0"
 description = "Digitize scanned paper well logs and digital-print PDF logs into LAS files"
 readme = "README-pypi.md"
 requires-python = ">=3.10"
@@ -42,6 +42,11 @@ module-name = "pylogdigitizer.curve_tracing_rs"
 features = ["pyo3/extension-module"]
 # never package stray locally built extension modules (the Rust one is built by maturin per platform)
 exclude = ["src/pylogdigitizer/*.so", "src/pylogdigitizer/*.pyd", "src/pylogdigitizer/**/__pycache__/**"]
+
+# no build-tool SBOMs in the wheel: maturin's Rust SBOM records the local build folder path
+[tool.maturin.sbom]
+rust = false
+auditwheel = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

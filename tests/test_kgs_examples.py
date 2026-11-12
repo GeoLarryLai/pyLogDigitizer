@@ -16,7 +16,7 @@ def _fake_registry(monkeypatch, payload=b"scan-bytes"):
     calls = []
 
     def urlopen(url, timeout=None):
-        calls.append(url)
+        calls.append(getattr(url, "full_url", url))     # a Request (with the User-Agent) or a URL
         return io.BytesIO(payload)
     monkeypatch.setattr(kx.urllib.request, "urlopen", urlopen)
     return calls

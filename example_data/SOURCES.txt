@@ -362,3 +362,24 @@ dashed), RxoRt, DCAL and MELCAL 6-16 in (black); depth column MEL15 / MEL20 0-20
 (log, 0.2-200 ohm-m) Deep (RILD, dark-green dashed), Medium (RILM, red dashed) and Shallow
 (RLL3, blue dotted) resistivity; track 3 CN Porosity (CNPOR, red dashed) and Density Porosity
 (DPOR, solid blue) 30 to -10 pu, PE 0-20 (light-green dashed), RHOC -0.25 to 0.25 g/cc.
+
+======================================================================
+FETCHED ON DEMAND (not shipped): Illinois Basin - Decatur Project (IBDP) vector-PDF example
+Credit: Illinois State Geological Survey (ISGS), Illinois Basin - Decatur Project (IBDP), U.S.
+        Department of Energy (DOE). IBDP Well Information, NETL Energy Data eXchange (EDX),
+        https://doi.org/10.18141/1854144
+Terms:  IBDP dataset license (based on CC BY 4.0, non-commercial). This example data is for non-commercial use only:
+        https://co2datashare.org/view/license/e27b2b34-a3fc-463f-adbf-bd14c83640f4
+Well:   CCS Well #1 (CCS1), ADM, Decatur, Macon County, Illinois; API 121152341500.
+Archive: https://edx.netl.doe.gov/storage/f/edx/2021/07/2021-07-09T20:56:55.522Z/353c30db-2bb9-4bc9-8b36-a9fedf4024f7/ibdp_well_information.zip
+        (4.6 GB). Folder IBDP_Well_Information/IBDP_Geophysical_Logs/1211523415_CCS1/
+        PEX_Petrophysical_Interpretations_V20150601/
+Files (only these two members are read from the archive, with HTTP range requests, by
+pylogdigitizer.ibdp_examples.fetch_ibdp_example("CCS1"); SHA-256 checked, cached under
+~/.cache/pylogdigitizer/ibdp or $PYLOGDIGITIZER_CACHE; used by notebook 06):
+  CCS1_PEX_Merged_2in.pdf  <- 1211523415_20140326_PEX_Merged_Petrophysical_Data_2in.pdf
+             Schlumberger merged petrophysical log, 2 in per 100 ft, one 594 x 11772 pt vector page
+             (header block, 0-7350 ft, 12 curves in three tracks)   (1,209,760 bytes)
+  CCS1_PEX_Merged.las      <- 1211523415_PEX_Merged.las
+             LAS the log was plotted from (0-7350 ft, 0.5 ft step; reference for the comparison)
+             (2,188,275 bytes)

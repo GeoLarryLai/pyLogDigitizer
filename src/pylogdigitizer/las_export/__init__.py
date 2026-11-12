@@ -22,17 +22,27 @@ def curves_summary(path: str | Path) -> dict[str, dict]:
                            "base": float(s.index.max()) if len(s) else None}
     return out
 
-LAS_STEPS = (0.5, 0.25)
+LAS_STEPS = (0.5, 0.25)          # the usual depth steps; any step > 0 is accepted
+
+
+def check_step(step) -> float:
+    """A LAS depth step in feet: a finite number greater than 0 (ValueError otherwise)."""
+    try:
+        step = float(step)
+    except (TypeError, ValueError):
+        raise ValueError(f"LAS step must be a number of feet greater than 0, got {step!r}") from None
+    if not (np.isfinite(step) and step > 0):
+        raise ValueError(f"LAS step must be a number of feet greater than 0, got {step}")
+    return step
 
 
 def resample(depth: np.ndarray, values: np.ndarray, step: float = 0.5, max_gap: float | None = None
              ) -> tuple[np.ndarray, np.ndarray]:
-    """Resample a traced line onto a regular depth grid (default 0.5 ft, option 0.25 ft) by linear
+    """Resample a traced line onto a regular depth grid (default 0.5 ft; any step > 0) by linear
     interpolation along the line only: no smoothing or filtering. A grid depth gets NaN (written as
     the LAS null) when either neighbouring trace sample is NaN (gap / clipped stretch) or the two
     neighbours are more than ``max_gap`` apart (default 4 steps)."""
-    if not any(abs(step - s_) < 1e-9 for s_ in LAS_STEPS):
-        raise ValueError(f"LAS step must be one of {LAS_STEPS} ft, got {step}")
+    step = check_step(step)
     order = np.argsort(depth)
     d, v = np.asarray(depth, float)[order], np.asarray(values, float)[order]
     grid = np.arange(np.ceil(d[0] / step) * step, d[-1] + step / 2, step)
@@ -144,13 +154,15 @@ def write_las(path: str | Path, depth: np.ndarray, curves: dict[str, np.ndarray]
 def common_grid(results: dict, step: float = 0.5):
     """{name: (depth, value)} -> (depth grid, {name: values}) on one regular grid (no smoothing).
 
-    Leading / trailing depths where every curve is null are dropped. ``step`` must be 0.5 or 0.25 ft.
+    Leading / trailing depths where every curve is null are dropped. ``step``: any step > 0 ft
+    (default 0.5).
     """
+    step = check_step(step)
     series = {k: resample(d, v, step) for k, (d, v) in results.items() if len(d) > 1}
     if not series:
         raise ValueError("no curves to put on a grid")
     d0 = min(g[0] for g, _ in series.values()); d1 = max(g[-1] for g, _ in series.values())
-    grid = np.round(np.arange(np.ceil(d0 / step) * step, d1 + step / 2, step), 4)
+    grid = np.round(np.arange(np.ceil(d0 / step) * step, d1 + step / 2, step), 6)
     curves = {}
     for k, (g, v) in series.items():
         out = np.full(grid.shape, np.nan)

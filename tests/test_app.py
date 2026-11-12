@@ -477,10 +477,12 @@ def test_curve_layers_reference_and_step(app_sid, tmp_path):
     assert up["name"] == "a.tif" and up["size"] == 3
     assert c.post("/app/api/upload", content=b"x", headers={"X-Filename": "a.exe"}).status_code == 400
     c.post(f"/app/api/{sid}/export/folder", json={"path": str(tmp_path / "s")})
-    assert c.post(f"/app/api/{sid}/export/las", json={"step": 0.3}).status_code == 400
-    w = c.post(f"/app/api/{sid}/export/las", json={"step": 0.25}).json()["written"]
+    for bad in (0, -0.5, "abc", "nan", "inf", 1e-9):              # any step > 0 ft, validated
+        assert c.post(f"/app/api/{sid}/export/las", json={"step": bad}).status_code == 400, bad
     from pylogdigitizer.las_export import read_las
-    d = np.diff(read_las(w[0]).index); assert np.allclose(d, 0.25)
+    for step in (0.25, 0.3):
+        w = c.post(f"/app/api/{sid}/export/las", json={"step": step}).json()["written"]
+        d = np.diff(read_las(w[0]).index); assert np.allclose(d, step)
 
 
 def test_rotate_rebuilds_session(project):

@@ -198,7 +198,10 @@ def _download(url: str, dest: Path, sha256: str, timeout: float = 120.0) -> None
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".part")
     try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=timeout) as r:
+        from pylogdigitizer import __version__
+        # some public archives (e.g. the USGS GeoLog Archiver) refuse the default Python agent
+        req = urllib.request.Request(url, headers={"User-Agent": f"pyLogDigitizer/{__version__}"})
+        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(req, timeout=timeout) as r:
             shutil.copyfileobj(r, out)
         got = _sha256(Path(tmp))
         if got != sha256:

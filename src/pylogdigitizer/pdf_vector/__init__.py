@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Larry Syu-Heng Lai
-"""pdf_vector — digitize clean *digital-print* well logs (PDF, and later TIFF).
+"""pdf_vector — digitize clean *digital-print* well logs (vector PDF pages).
+
+:func:`digitize_vector` reads a vector page's curve paths exactly (track borders, depth numbers,
+header scales and colours) and resamples them onto a chosen depth step for LAS. :func:`mixed_header`
+reads the header text of a scan with a vector text overlay. :func:`digitize_pdf` is the older
+multi-page reader, kept as the fallback for other layouts.
 
 This path is for digitally exported prints that still carry vector strokes (or
 high-res colour raster): Schlumberger-style vertical PDFs and USGS GeoLog
@@ -41,6 +46,16 @@ from pylogdigitizer.pdf_vector.assemble import (
 )
 from pylogdigitizer.pdf_vector.regions import Region, PageLayout, detect_page_layout, annotate_layout_figure
 from pylogdigitizer.pdf_vector.digitize import digitize_pdf, DigitizedLog
+from pylogdigitizer.pdf_vector.vector_log import (
+    HeaderEntry,
+    VectorPage,
+    read_vector_page,
+    vector_curves,
+    resample_path,
+    resample_log,
+    digitize_vector,
+)
+from pylogdigitizer.pdf_vector.mixed import mixed_header, apply_mixed_header
 
 __all__ = [
     "PageVectors",
@@ -68,4 +83,13 @@ __all__ = [
     "PageLayout",
     "detect_page_layout",
     "annotate_layout_figure",
+    "HeaderEntry",
+    "VectorPage",
+    "read_vector_page",
+    "vector_curves",
+    "resample_path",
+    "resample_log",
+    "digitize_vector",
+    "mixed_header",
+    "apply_mixed_header",
 ]

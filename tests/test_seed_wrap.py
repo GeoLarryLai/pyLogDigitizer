@@ -118,8 +118,11 @@ def test_las_resample_linear_keeps_nulls():
     assert np.isnan(o[(g > 103.1) & (g < 104.9)]).all()
     g5, _ = resample(d, v, 0.5); assert np.allclose(np.diff(g5), 0.5)
     import pytest
-    with pytest.raises(ValueError):
-        resample(d, v, 0.1)
+    g01, _ = resample(d, v, 0.1)                           # any step > 0 ft is accepted
+    assert np.allclose(np.diff(g01), 0.1)
+    for bad in (0, -1, float("inf")):
+        with pytest.raises(ValueError):
+            resample(d, v, bad)
 
 
 def test_role_by_position_hint():

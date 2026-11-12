@@ -19,6 +19,11 @@ This product includes third-party software:
 
 Example data in example_data/ (scans and LAS files from the Kansas Geological Survey) is not
 covered by this license; see example_data/SOURCES.txt for sources and terms.
+The vector-PDF example used by notebook 06 (fetched on demand, not shipped) is IBDP well CCS1
+data under the IBDP dataset license (CC BY 4.0-based, non-commercial); credit: Illinois State
+Geological Survey (ISGS), Illinois Basin - Decatur Project (IBDP), U.S. Department of Energy
+(DOE), https://doi.org/10.18141/1854144; see example_data/SOURCES.txt. This example data is
+for non-commercial use only.
 
 Python dependencies (NumPy, OpenCV, lasio, FastAPI, uvicorn, ...) are installed
 separately and are under their own licenses.

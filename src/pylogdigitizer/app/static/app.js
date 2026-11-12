@@ -14,7 +14,7 @@ const STEPS = [{id: "open", title: "Open scan"}, {id: "tracks", title: "Tracks a
 let CHK = null, CUR = null, CPOS = 0, STROKE = [], DRAG = null, PROG = null, NODE = null, HOVER = null, HW = [];
 let INFO = null, SID = null, ST = null, LAY = null, OV = null, HDR = null, viewer = null, mode = "pan", pts = [], STEP = "open";
 let LBL = [], LBLsel = new Set(), CURV = null, TR = null, GRID = null, HLITEM = null;
-let CVIEW = "curves", HLN = null, LOGS = null, LOGSEL = null, SHOWIMG = true;   // Curves view, header lines, Check and save plot
+let CVIEW = "curves", HLN = null, LOGS = null, LOGSEL = null, SHOWIMG = true, LASSTEP = "0.5";   // Curves view, header lines, Check and save plot, typed LAS step (kept across re-renders)
 const GREY = () => ["tracks", "curves", "trace"].includes(STEP);              // working tabs show the scan in greyscale
 const LAYERS = {scan: true, hl: false, grid: true, traces: true};
 const fmt = (v, d = 1) => v == null || !isFinite(v) ? "–" : (+v).toFixed(d);
@@ -152,7 +152,9 @@ function placePops(P, yb) {               // scale pop-ups under their header li
 function drawLogs() {                     // Check and save: every chosen log in its track, row for row with the scan on the left
   const pane = $("logPane"); if (pane.hidden || !LOGS || !viewer || !BASE()) return;
   const cv = $("logCv"), c = cv.getContext("2d"); cv.width = cv.clientWidth; cv.height = cv.clientHeight; c.clearRect(0, 0, cv.width, cv.height);
-  const Y = r => BASE().imageToViewerElementCoordinates(new OpenSeadragon.Point(0, r)).y;
+  // viewer-element y, shifted by the gap between the two boxes' tops (borders / padding), so rows line up exactly
+  const dy = viewer.element.getBoundingClientRect().top - cv.getBoundingClientRect().top;
+  const Y = r => BASE().imageToViewerElementCoordinates(new OpenSeadragon.Point(0, r)).y + dy;
   const tr = LOGS.tracks.length ? LOGS.tracks : [{name: null, left: 0, right: LOGS.width}], sel = LOGS.curves.filter(q => LOGSEL.has(q.id));
   const x0 = Math.min(...tr.map(t => t.left)), x1 = Math.max(...tr.map(t => t.right)), ml = 50, mr = 10, X = v => ml + (v - x0) / (x1 - x0) * (cv.width - ml - mr);
   const nmax = Math.max(1, ...tr.map(t => sel.filter(q => q.track === t.name).length)), HD = 8 + 15 * nmax;
@@ -318,7 +320,13 @@ async function render(refit = true) { const st = STEPS.findIndex(s => s.id === S
   try { await R[STEP](); } catch (e) { console.warn(e); } bindTools(); applyLayers(); if (refit) focusStep(); draw(); }
 Shell.init({steps: STEPS, onStep: (i, s) => { STEP = s.id; render(); }});
 const main = (label, fn) => { $("mainBtn").textContent = label; $("mainBtn").onclick = async () => { $("mainBtn").disabled = true; try { await fn(); } catch (e) { console.warn(e); } finally { $("mainBtn").disabled = false; } }; };
-const next = () => Shell.complete(Shell.cur);
+const VEC = () => ST?.input?.used === "vector";
+const VNOTE = "vector file: tracing not needed";
+function applyInputMode() {           // vector files: the tracing steps do not apply, so they are hidden (not greyed out)
+  for (const s of STEPS) if (["tracks", "curves", "trace"].includes(s.id)) { s.hidden = VEC(); if (s.hidden) s.note = VNOTE; }
+  if (VEC()) { for (const i of [0, 1, 2, 3]) Shell.complete(i, false); } else Shell.reset(1);
+}
+const next = () => { if (VEC() && STEP === "open") { applyInputMode(); Shell.go(4); return; } Shell.complete(Shell.cur); };
 const on = (id, fn) => { const b = $(id); if (b) b.onclick = async () => { try { await fn(); } catch (e) { console.warn(e); } }; };
 async function upload(file) {
   const r = await fetch("/app/api/upload", {method: "POST", headers: {"X-Filename": encodeURIComponent(file.name)}, body: file});
@@ -336,8 +344,18 @@ R.open = () => {
   $("stepBody").innerHTML = `<h3>Scan</h3><div class="row"><select id="cat" style="width:100%">${INFO.catalog.map((c, i) => `<option value="${i}">${esc(c.well)} · ${esc(c.scan.split("/").pop())}${c.las ? " · with LAS" : ""}</option>`).join("")}</select></div>
     <div class="row"><label class="filebtn">or choose a file… <input type="file" id="filePick" accept=".tif,.tiff,.png,.jpg,.jpeg,.pdf"></label><span class="note" id="fileName"></span></div>
     <div class="row"><label class="filebtn">reference LAS (optional) <input type="file" id="lasPick" accept=".las"></label><span class="note" id="lasName"></span></div>
+    <div id="kindBox" hidden><h3>Input type</h3><div class="card" id="kindCard"><span class="note">checking the file…</span></div>
+    <div class="row"><label>method</label><select id="method" style="flex:1"><option value="auto">as detected (recommended)</option>
+      <option value="trace">image: clean up and trace the curves</option><option value="vector">vector PDF: read the curve paths</option>
+      <option value="mixed">mixed PDF: header from the PDF text, curves traced</option></select></div>
+    <div class="row" id="pageRow" hidden><label>PDF page</label><input type="number" id="pdfPage" min="1" value="1" style="width:5em"></div></div>
     <div class="row"><label><input type="checkbox" id="autoLayout" checked> automatic layout</label></div>
-    ${ST ? `<div class="card">Loaded: <b>${esc(ST.well)}</b> · ${ST.width}×${ST.height} px · ${ST.n_curves} curve(s) found (${ST.kind === "color" ? "by colour" : ST.kind === "style" ? "by line style" : "one curve"})</div>
+    ${ST && VEC() ? `<div class="card">Loaded: <b>${esc(ST.well)}</b> · PDF page ${(ST.vector?.page ?? 0) + 1} · ${ST.n_curves} curve(s) read from their paths</div>
+      <div class="card vnote"><b>${VNOTE}.</b> The curves, depth numbers and scales were read from the PDF itself, so the
+      <i>Tracks and depth</i>, <i>Curves</i> and <i>Trace and fix</i> steps are hidden. Continue to <b>Check and save</b>.</div>
+      ${(ST.vector?.notes || []).length ? `<div class="note">${ST.vector.notes.map(esc).join("<br>")}</div>` : ""}` : ""}
+    ${ST && !VEC() ? `<div class="card">Loaded: <b>${esc(ST.well)}</b> · ${ST.width}×${ST.height} px · ${ST.n_curves} curve(s) found (${ST.kind === "color" ? "by colour" : ST.kind === "style" ? "by line style" : "one curve"})</div>
+      ${ST.mixed ? `<div class="note">Header from the PDF text: ${(ST.mixed.applied || []).map(esc).join("<br>") || "no matching track"}</div>` : ""}
       ${multi ? `<h3>Depth section</h3><div class="note">This sheet holds more than one log section. Pick one (or click its band on the scan).</div>
         ${ST.depth_sections.map((d, i) => `<div class="row"><button id="dsec${d.index}" style="width:100%" ${ST.depth_section === d.index ? 'class="primary"' : ""}>Section ${i + 1}: ${fmt(d.top, 0)}–${fmt(d.base, 0)} ft · ${fmt(d.px_per_ft, 2)} px/ft</button></div>`).join("")}` : ""}
       <h3>Straight?</h3><div class="note">Deskewed automatically (${sk.length ? `${fmt(Math.min(...sk), 2)}° to ${fmt(Math.max(...sk), 2)}°` : "no blocks"}). If the grid still leans, turn it a little:</div>
@@ -347,21 +365,49 @@ R.open = () => {
     <div class="${f.ml.ok ? "" : "disabled-feature"}">ML U-Net cost map: ${f.ml.ok ? '<span class="okc">yes</span>' : "no"}</div>${hint(f.ml)}
     <div class="${f.plot.ok ? "" : "disabled-feature"}">QC plot PNG export: ${f.plot.ok ? '<span class="okc">yes</span>' : "no"}</div>${hint(f.plot)}</div>
     <div class="note">Project: ${esc(INFO.project)} · presets from <code>dataset_profiles/*_wells.yaml</code></div></details>`;
-  $("filePick").onchange = () => { $("fileName").textContent = $("filePick").files[0]?.name || ""; };
+  let UP = null;                     // uploaded file path (uploaded once, when picked, so its type can be shown)
+  const KIND = {scan: "image scan", vector: "vector PDF", mixed: "mixed PDF (scan with PDF text)"};
+  const showKind = async (path) => {
+    const el = $("kindCard"); if (!el) return;
+    try { renderKind(await api("GET", "/app/api/detect?scan=" + encodeURIComponent(path)), /\.pdf$/i.test(path)); }
+    catch (e) { el.innerHTML = `<span class="note">could not inspect the file</span>`; }
+  };
+  const renderKind = (d, pdf) => {
+    const el = $("kindCard"); if (!el || !d) return; const ev = d.evidence || {};
+    { $("pageRow").hidden = !pdf; $("kindBox").hidden = !pdf; if (!pdf) $("method").value = "auto";   // image scans: the Open tab stays as before (always the image workflow)
+      if (pdf && ev.curve_pages?.length && d.kind === "vector") $("pdfPage").value = ev.curve_pages[0];
+      el.dataset.kind = d.kind;
+      el.innerHTML = `Detected: <b>${esc(KIND[d.kind] || d.kind)}</b>` + (pdf ? `<div class="note">page ${d.page + 1} of ${d.n_pages}: ${ev.n_curve_paths} curve path(s), ${ev.text_chars} text characters, pictures cover ${Math.round(100 * (ev.image_coverage || 0))}% of the page${ev.curve_pages?.length ? ` · curves on page ${ev.curve_pages.join(", ")}` : ""}</div>`
+        : `<div class="note">${ev.size_px ? `${ev.size_px[0]}×${ev.size_px[1]} px ${esc(ev.format || "")}` : ""}</div>`)
+        + `<div>Recommended: ${esc(String(d.method_label || "").replace(/\s*\([a-z_]+\)$/, ""))}</div>` + (d.kind === "vector" ? `<div class="note">${VNOTE}</div>` : "");
+      $("method").querySelector('option[value="auto"]').textContent = `as detected: ${KIND[d.kind] || d.kind} (recommended)`;
+      for (const v of ["vector", "mixed"]) $("method").querySelector(`option[value="${v}"]`).disabled = !pdf;
+    }
+  };
+  if (ST?.scan) { const i = INFO.catalog.findIndex(c => String(ST.scan).replace(/\\/g, "/").endsWith(c.scan)); if (i >= 0) $("cat").value = String(i); }
+  const catPath = () => INFO.catalog[+$("cat").value]?.scan;
+  if (ST?.input && !$("filePick").files.length) { $("method").value = ST.input.method || "auto"; }
+  if (ST?.input?.kind) { renderKind(ST.input, /\.pdf$/i.test(ST.scan_name || "")); if (VEC()) $("pdfPage").value = (ST.vector?.page ?? 0) + 1; }
+  else if (catPath()) showKind(catPath());
+  $("filePick").onchange = async () => { const fp = $("filePick").files[0]; $("fileName").textContent = fp?.name || ""; UP = null;
+    if (fp) { UP = await upload(fp); await showKind(UP); if (ST) $("mainBtn").textContent = "Open & analyse (replaces current)"; } };
   $("lasPick").onchange = () => { $("lasName").textContent = $("lasPick").files[0]?.name || ""; };
   if (multi) { ST.depth_sections.forEach(d => on("dsec" + d.index, () => chooseSection(d.index))); setTimeout(() => { mode = "dsec"; }, 0); }
   on("rotApply", async () => { const r = await runJob(A("/rotate"), {deg: +$("rot").value || 0}, "rotate and analyse again"); await afterLoad(r.sid); render(false); });
   main(ST ? "Continue" : "Open & analyse", async () => {
     const fp = $("filePick").files[0], lp = $("lasPick").files[0];
-    if (ST && !fp && $("cat").dataset.touched !== "1") { if (multi && ST.errors?.depth_section) { toast("pick a depth section first", true); return; } next(); return; }
+    if (ST && !fp && $("cat").dataset.touched !== "1" && $("method").dataset.touched !== "1") { if (multi && ST.errors?.depth_section) { toast("pick a depth section first", true); return; } next(); return; }
     let body;
-    if (fp) body = {scan: await upload(fp), curve: "GR", well: fp.name.replace(/\.[^.]+$/, ""), las: lp ? await upload(lp) : null, settings: {}, auto_layout: $("autoLayout").checked};
+    if (fp) body = {scan: UP || await upload(fp), curve: "GR", well: fp.name.replace(/\.[^.]+$/, ""), las: lp ? await upload(lp) : null, settings: {}, auto_layout: $("autoLayout").checked};
     else { const c = INFO.catalog[+$("cat").value]; body = {scan: c.scan, curve: c.curve, well: c.well, las: lp ? await upload(lp) : c.las, settings: c.settings, auto_layout: $("autoLayout").checked}; }
+    body.method = $("method").value; if (!$("pageRow").hidden) body.page = Math.max(0, (+$("pdfPage").value || 1) - 1);
     const r = await runJob("/app/api/open", body, "loading");
-    await afterLoad(r.sid); render(false);
+    await afterLoad(r.sid); applyInputMode(); render(false);
+    if (VEC()) { Shell.go(4); return; }
     if (!((ST.depth_sections || []).length > 1 && ST.errors?.depth_section)) next();
   });
-  $("cat").onchange = () => { $("cat").dataset.touched = "1"; if (ST) $("mainBtn").textContent = "Open & analyse (replaces current)"; };
+  $("cat").onchange = () => { $("cat").dataset.touched = "1"; showKind(catPath()); if (ST) $("mainBtn").textContent = "Open & analyse (replaces current)"; };
+  $("method").onchange = () => { $("method").dataset.touched = "1"; if (ST) $("mainBtn").textContent = "Open & analyse (replaces current)"; };
   help(`Choose a scan from the list or a file, then <b>Open & analyse</b>. Progress shows as n / N below. ${NAV}`);
 };
 async function chooseSection(i) { await runJob(A("/depth_section"), {index: i}, "depth section"); LAY = await api("GET", A("/layout")); await loadLabels(); await refresh(); render(false); }
@@ -634,7 +680,7 @@ R.save = async () => {
   $("stepLead").textContent = "The scan (left) next to every digitized log (right), row for row. Choose what to plot, then write the figures, the optional CSV and the LAS file.";
   LOGS = await api("GET", A("/logs"));
   const ids = LOGS.curves.map(q => q.id); LOGSEL = LOGSEL ? new Set(ids.filter(i => LOGSEL.has(i))) : new Set(ids); if (!LOGSEL.size) LOGSEL = new Set(ids);
-  $("stepBody").innerHTML = `<h3>Plot</h3>
+  $("stepBody").innerHTML = (VEC() ? `<div class="card vnote"><b>${VNOTE}:</b> every curve was read from its path in the PDF (page ${(ST.vector?.page ?? 0) + 1}).</div>` : "") + `<h3>Plot</h3>
     <details class="dd" id="logDD"><summary id="logSum"></summary><div class="ddl">${LOGS.curves.map(q => `<label><input type="checkbox" data-log="${q.id}" ${LOGSEL.has(q.id) ? "checked" : ""}><span class="chip" style="background:${q.color}"></span>${esc(q.name)} <span class="muted">${esc(q.track || "")}</span></label>`).join("")}
       <div class="row"><button id="logAll">All</button><button id="logNone">None</button></div></div></details>
     <div class="row"><label style="min-width:0"><input type="checkbox" id="showImg" ${SHOWIMG ? "checked" : ""}> show the original image</label></div>
@@ -644,7 +690,7 @@ R.save = async () => {
     <div class="og"><div class="og-h">Figures</div><div class="row"><button data-x="figure" ${off(f.plot)}>Image + logs PNG</button><button data-x="qc_png" ${!f.plot.ok ? off(f.plot) : (!ST.las ? 'disabled title="no reference LAS"' : "")}>QC plot PNG (selected curve)</button></div></div>
     <div class="og"><div class="og-h">Log data (optional)</div><div class="row"><button data-x="logs_csv">CSV of the plotted logs</button></div></div>
     <div class="og"><div class="og-h">LAS file</div><div class="row"><label>folder</label><input id="xDir" value="${esc(x.folder)}" style="flex:1"><button id="xSet">Set</button></div>
-      <div class="row"><label>depth step</label><select id="xStep"><option value="0.5" selected>0.5 ft</option><option value="0.25">0.25 ft</option></select></div>
+      <div class="row"><label>depth step</label><input type="number" id="xStep" min="0" step="any" value="${esc(LASSTEP)}" style="width:6em"> ft<span class="note" id="xStepMsg"></span></div>
       <div class="note">One LAS with every curve (values on the step grid, no smoothing): press <b>Save LAS</b> above.</div></div>
     <details class="more"><summary>More outputs</summary><div class="row"><button data-x="csv">CSV (selected curve)</button><button data-x="session">Session JSON</button><button data-x="training" title="image + corrected trace to training_data/corrections">Training sample</button></div></details>
     <div class="row"><button id="xOpen" ${x.exists ? "" : 'disabled title="created by the first save"'}>Open folder</button></div>
@@ -654,7 +700,11 @@ R.save = async () => {
   const all = v => { document.querySelectorAll("input[data-log]").forEach(cb => { cb.checked = v; }); LOGSEL = new Set(v ? ids : []); sum(); };
   on("logAll", () => all(true)); on("logNone", () => all(false)); sum();
   $("showImg").onchange = () => { SHOWIMG = $("showImg").checked; applyLayers(); };
-  const body = () => ({step: +$("xStep").value, ids: [...LOGSEL], image: SHOWIMG});
+  const stepOk = () => { const v = +$("xStep").value, ok = Number.isFinite(v) && v > 0;   // any typed step > 0 ft
+    if ($("xStepMsg")) $("xStepMsg").textContent = ok ? "" : " enter a step greater than 0";
+    if (!ok) { toast("LAS step must be a number of feet greater than 0", true); throw new Error("bad step"); } return v; };
+  $("xStep").oninput = () => { LASSTEP = $("xStep").value; const v = +LASSTEP; $("xStepMsg").textContent = Number.isFinite(v) && v > 0 ? "" : " enter a step greater than 0"; };
+  const body = () => ({step: stepOk(), ids: [...LOGSEL], image: SHOWIMG});
   const after = async r => { toast("written: " + r.written.map(p => p.split(/[\\/]/).pop()).join(", ")); await refresh(false); render(false); };
   // the box shows the short folder label; only a typed change is posted (the label is never sent back as a path)
   on("xSet", async () => { if ($("xDir").value === x.folder) return; await api("POST", A("/export/folder"), {path: $("xDir").value}); await refresh(false); render(false); });
@@ -662,7 +712,7 @@ R.save = async () => {
   on("xOpen", async () => api("POST", "/shell/api/open_folder", {path: ST.export.folder_abs}));
   $("refPick").onchange = async () => { const fp = $("refPick").files[0]; if (!fp) return; await api("POST", A("/reference"), {las: await upload(fp)}); await refresh(false); render(false); };
   main("Save LAS", async () => { if ($("xDir").value !== x.folder) await api("POST", A("/export/folder"), {path: $("xDir").value});
-    await after(await api("POST", A("/export/las"), {step: +$("xStep").value})); Shell.complete(4, false); });
+    await after(await api("POST", A("/export/las"), {step: stepOk()})); Shell.complete(4, false); });
   help(`Left: the scan as printed. Right: the digitized logs at the same depth (pan and zoom either side). ${NAV}`);
   const q = await api("GET", A("/compare"));
   if (!q.available) { $("cmp").innerHTML = `<div class="card">No reference LAS loaded: you can still save.</div>`; return; }

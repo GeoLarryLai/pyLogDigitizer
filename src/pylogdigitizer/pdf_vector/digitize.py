@@ -43,7 +43,7 @@ class DigitizedLog:
         return write_las(path, self.depth, self.curves, units=self.units, well=self.well, null=null)
 
     def resample(self, step: float = 0.5) -> None:
-        """Resample every trace onto a common depth grid (0.5 or 0.25 ft). No smoothing.
+        """Resample every trace onto a common depth grid (any step > 0 ft, default 0.5). No smoothing.
 
         Gaps larger than ``max_gap`` (default 4 steps in :func:`las_export.resample`) stay NaN,
         so sparse page coverage is not bridged by long interpolations.
@@ -212,7 +212,7 @@ def digitize_pdf(
     ----------
     path : PDF path
     pages : 0-based indices; ``None`` auto-selects pages with ≥4 depth labels
-    step : LAS depth step — ``0.5`` (default) or ``0.25`` ft
+    step : LAS depth step in ft — ``0.5`` (default) or any step > 0
     mnemonic_colors : optional explicit mnemonic→RGB map (fallback; prefer styles)
     mnemonic_styles : optional mnemonic→{color,width,dash} override
     well_extra : extra / override WELL header fields
