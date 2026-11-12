@@ -10,7 +10,7 @@
 > [!WARNING]
 > **pyLogDigitizer** is under active development, and many functions are still experimental and not fully validated. Please use with caution.
 
-**pyLogDigitizer** turns scanned well-log prints into LAS files. It finds the tracks, grid and depth numbers, reads the curve header, tells the curves apart (by ink colour on colour scans, by line style on black-and-white scans) and traces each one. A local browser app lets you check and fix every step. Everything runs on your own computer; nothing is uploaded.
+**pyLogDigitizer** turns well-log image scans, and digital-print PDFs, into LAS files. It finds the tracks, grid and depth numbers, reads the curve header, tells the curves apart (by ink colour on colour scans, by line style on black-and-white scans) and traces each one. A local browser app lets you check and fix every step. Everything runs on your own computer; nothing is uploaded.
 
 ## Installation
 
@@ -44,9 +44,13 @@ pip install -e .
 
 Installing from source builds the Rust tracer and needs a Rust toolchain. Without the Rust part everything still works, only slower.
 
+## Supported input files
+
+The app opens TIFF, PNG, JPEG and PDF, plus an optional LAS file as a reference. The Python API loads TIFF, PNG and JPEG, or any other still image Pillow can open. A scanned (raster) PDF is read from the image on the first page. A digital-print PDF that still has vector curves is read with `pylogdigitizer.pdf_vector.digitize_pdf` (experimental). Multi-page files use only the first page.
+
 ## What it can do
 
-- Read colour raster scans (TIFF, JPEG or a raster PDF page) and tell the curves apart by ink colour.
+- Read colour image scans and tell the curves apart by ink colour.
 - Read black-and-white scans and tell the curves apart by line style (solid, dashed, dotted; thin or thick).
 - Find tracks, grid lines and depth numbers on their own, and read curve names and scales from the header with OCR.
 - Trace every curve and read off-scale stretches on the backup scale where they wrap back in from the other edge.

@@ -1,6 +1,6 @@
 # pyLogDigitizer
 
-pyLogDigitizer turns scanned well-log prints into LAS files. It finds the tracks, grid and depth numbers, reads the curve header (names and scales) with OCR, tells the curves apart (by ink colour on colour raster scans, by line style on black-and-white scans) and traces each one. Off-scale values are read on the backup scale where the overflow wraps back in from the opposite edge, and written as null otherwise. Digital-print PDFs that still carry vector curves can be read directly (experimental).
+pyLogDigitizer turns well-log image scans (TIFF, PNG, JPEG or a scanned PDF) into LAS files. It finds the tracks, grid and depth numbers, reads the curve header (names and scales) with OCR, tells the curves apart (by ink colour on colour raster scans, by line style on black-and-white scans) and traces each one. Off-scale values are read on the backup scale where the overflow wraps back in from the opposite edge, and written as null otherwise. Digital-print PDFs that still carry vector curves can be read directly (experimental).
 
 A local browser app in five tabs (open scan; tracks and depth; curves; trace and fix; check and save) supports review and correction before LAS 2.0 export at 0.5 ft (or 0.25 ft). It works best on colour scans; black-ink scans carry higher uncertainty. All processing remains on the user's own computer.
 
