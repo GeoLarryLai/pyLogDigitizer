@@ -141,4 +141,6 @@ Lai, L.S.-H. (2026) pyLogDigitizer. *Zenodo*, [https://doi.org/10.5281/zenodo.23
 
 ## License
 
-Code: **AGPL-3.0-or-later**. Third-party notices and data credits: [`NOTICE`](NOTICE).
+Code: **AGPL-3.0-or-later**. You are free to use, modify, and share it; anyone distributing modified code or running a modified version as a network service must share its source under the same license.
+
+Third-party notices and data credits: [`NOTICE`](NOTICE).
